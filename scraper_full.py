@@ -243,43 +243,37 @@ async def scrape_domain(page):
 
     if isinstance(listings, dict) and 'error' in listings:
         log(f"  __NEXT_DATA__ parse issue: {listings.get('error')} — falling back to DOM")
-        # DOM fallback — find individual listing cards and extract structured data
+        # DOM fallback — collect only listing URLs + display prices from the search page.
+        # Address/suburb/beds are fetched later from each listing's own componentProps.
         listings = await page.evaluate("""() => {
             const results = [];
-            // Domain listing cards have links that look like /14-street-name-suburb-qld-4209-12345678
-            // The postcode pattern in the URL slug is the most reliable selector
-            const listingLinks = Array.from(document.querySelectorAll('a[href]')).filter(a => {
-                const h = a.getAttribute('href') || '';
-                return /\\-qld\\-\\d{4}\\-\\d{6,}/.test(h) && !h.includes('/real-estate-agent/');
-            });
-            // Deduplicate by href
+            // Domain individual listing slugs always contain: -qld-POSTCODE-LISTINGID
+            // Use this pattern to find unique listing hrefs and avoid nav/agent links.
             const seen = new Set();
-            listingLinks.forEach(a => {
-                const href = a.getAttribute('href');
+            document.querySelectorAll('a[href]').forEach(a => {
+                const href = a.getAttribute('href') || '';
+                if (!/\\-qld\\-\\d{4}\\-\\d{5,}$/.test(href)) return;
                 if (seen.has(href)) return;
                 seen.add(href);
-                // Walk up to find the card container
-                let card = a;
-                for (let i = 0; i < 8; i++) {
-                    if (!card.parentElement) break;
+
+                // Walk up the DOM tree to find the nearest card ancestor that
+                // contains a price — limit to 10 levels to avoid over-reaching.
+                let card = a.parentElement;
+                for (let i = 0; i < 10 && card; i++) {
+                    if (/\\$[\\d,]|Auction|Offers|Price Guide/i.test(card.innerText || '')) break;
                     card = card.parentElement;
-                    const h = card.innerHTML || '';
-                    if (h.includes('bed') || h.includes('bath') || h.includes('$')) break;
                 }
-                const text = card.innerText || '';
-                const lines = text.split('\\n').map(l => l.trim()).filter(l => l);
-                const priceLine = lines.find(l => /\\$[\\d,]+|Auction|Contact Agent|Price Guide|Offers/i.test(l)) || '';
-                // Address: line starting with a digit (street number) — not a price line
-                const addrLine = lines.find(l => /^\\d+[A-Za-z\\/]?\\s+\\w/.test(l) && !/\\$/.test(l)) || '';
-                // Suburb: capitalised word(s) after address
-                const suburbLine = lines.find(l => /^[A-Z][A-Z\\s]+$/.test(l.trim()) && l.length < 40) || '';
+                const cardText = (card || a).innerText || '';
+                // Extract price line from card text
+                const priceMatch = cardText.match(/\\$[\\s\\d,]+(?:k)?|Auction|Contact Agent|Price Guide[^\\n]*/i);
                 const fullUrl = href.startsWith('http') ? href : 'https://www.domain.com.au' + href;
                 results.push({
-                    address: addrLine,
-                    suburb_raw: suburbLine,
-                    price_display: priceLine,
+                    address: '',          // filled in from listing page componentProps
+                    suburb: '',
+                    postcode: '',
+                    price_display: priceMatch ? priceMatch[0].trim() : '',
                     url: fullUrl,
-                    description: lines.join(' ').slice(0, 400),
+                    description: '',
                 });
             });
             return { results };
@@ -342,6 +336,12 @@ async def scrape_domain_listing(page, url):
         'lease_end_date': None,
         'full_description': '',
         'features_domain': [],
+        'address_full': None,
+        'suburb': None,
+        'postcode': None,
+        'bedrooms': None,
+        'bathrooms': None,
+        'parking': None,
     }
     if not url or 'domain.com.au' not in url:
         return result
@@ -360,6 +360,21 @@ async def scrape_domain_listing(page, url):
             const landArea = (stats.find(s => s.key === 'landArea') || {}).value;
             const builtArea = (stats.find(s => s.key === 'buildingArea') || {}).value;
             const descArr = Array.isArray(cp.description) ? cp.description : [cp.description || ''];
+
+            // Extract address cleanly
+            const addrObj = cp.address || {};
+            let addrStr = '';
+            if (typeof addrObj === 'string') {
+                addrStr = addrObj;
+            } else {
+                const num = addrObj.streetNumber || '';
+                const street = addrObj.street || '';
+                addrStr = (num + ' ' + street).trim() || addrObj.displayAddress || addrObj.fullAddress || '';
+            }
+            const addrSuburb = typeof addrObj === 'object' ? (addrObj.suburb || '') : '';
+            const addrPostcode = typeof addrObj === 'object' ? String(addrObj.postcode || '') : '';
+            const addrState = typeof addrObj === 'object' ? (addrObj.state || 'QLD') : 'QLD';
+
             return {
                 description: descArr,
                 features: cp.features || [],
@@ -368,7 +383,10 @@ async def scrape_domain_listing(page, url):
                 parking: summary.parking,
                 landArea: landArea,
                 builtArea: builtArea,
-                address: cp.address,
+                address: addrStr,
+                suburb: addrSuburb,
+                postcode: addrPostcode,
+                state: addrState,
                 propertyType: summary.propertyType,
             };
         }""")
@@ -384,6 +402,18 @@ async def scrape_domain_listing(page, url):
             result['land_size_m2'] = data['landArea']
         if data.get('builtArea'):
             result['building_size_m2'] = data['builtArea']
+        if data.get('address'):
+            result['address_full'] = data['address']
+        if data.get('suburb'):
+            result['suburb'] = data['suburb']
+        if data.get('postcode'):
+            result['postcode'] = str(data['postcode'])
+        if data.get('beds') is not None:
+            result['bedrooms'] = data['beds']
+        if data.get('baths') is not None:
+            result['bathrooms'] = data['baths']
+        if data.get('parking') is not None:
+            result['parking'] = data['parking']
 
         # Parse description lines for key data
         for line in desc_lines:
@@ -689,29 +719,36 @@ async def run():
         parsed = []
         for raw in raw_listings:
             p = parse_domain_listing(raw)
-            # Filter: must have a parseable price or be auction in budget range
-            if p['price_numeric'] is None and not p['is_auction']:
+            # Filter: must have a parseable price, be an auction, or have no address yet (DOM fallback)
+            # DOM fallback listings have empty address — price will be confirmed from listing page
+            no_address = not p.get('address')
+            if p['price_numeric'] is None and not p['is_auction'] and not no_address:
                 log(f"  Skipping (no price): {p['address']}")
                 continue
-            # Assume auction = ~$925k (middle of budget)
+            # Assume auction/no-price DOM fallback = ~$925k (middle of budget)
             if p['price_numeric'] is None:
                 p['purchase_price'] = 925000
             else:
                 p['purchase_price'] = p['price_numeric']
-            # Skip if clearly out of range
-            if p['purchase_price'] < 800000 or p['purchase_price'] > 1050000:
+            # Skip if clearly out of range (but allow DOM fallback through — price unconfirmed)
+            if not no_address and (p['purchase_price'] < 800000 or p['purchase_price'] > 1050000):
                 continue
             parsed.append(p)
 
-        # Drop entries where address doesn't look like a real street address
-        parsed = [p for p in parsed if re.match(r'^\d+[A-Za-z/]?\s+\w', p.get('address',''))]
+        # Drop entries where address is non-empty but obviously invalid
+        # (empty address is allowed — DOM fallback will populate it from listing page)
+        parsed = [p for p in parsed if not p.get('address') or re.match(r'^\d+[\w/]*\s+[A-Za-z]', p.get('address',''))]
 
         # Deduplicate by address (DOM fallback often returns each property twice)
+        # Use URL as fallback dedup key when address is empty (DOM fallback path)
         seen_addr = set()
         deduped = []
         for p in parsed:
             addr_key = re.sub(r'[^a-z0-9]', '', (p['address'] + p.get('suburb','')).lower())
-            if addr_key and addr_key not in seen_addr:
+            if not addr_key:
+                # DOM fallback: use URL slug as key
+                addr_key = re.sub(r'[^a-z0-9]', '', p.get('domain_url', p.get('id', str(len(deduped)))))
+            if addr_key not in seen_addr:
                 seen_addr.add(addr_key)
                 deduped.append(p)
         parsed = deduped
@@ -730,6 +767,40 @@ async def run():
                 try:
                     # 3a. Domain individual listing page
                     domain_detail = await scrape_domain_listing(tab, p.get('domain_url', ''))
+
+                    # If address is empty (DOM fallback path), populate from listing page
+                    if not p.get('address') and domain_detail.get('address_full'):
+                        p['address'] = domain_detail['address_full']
+                        m_addr = re.match(r'^(\d+[A-Za-z]?(?:/\d+[A-Za-z]?)?)\s+(.+)$', p['address'].strip())
+                        if m_addr:
+                            p['street_number'] = m_addr.group(1)
+                            p['street_name'] = m_addr.group(2)
+                        p['id'] = re.sub(r'[^a-zA-Z0-9_]', '_', p['address'] + '_' + p.get('suburb',''))
+                    if not p.get('suburb') and domain_detail.get('suburb'):
+                        p['suburb'] = domain_detail['suburb']
+                    if not p.get('postcode') and domain_detail.get('postcode'):
+                        p['postcode'] = domain_detail['postcode']
+
+                    # Validate we have a real street address; skip if not
+                    if not re.match(r'^\d+[\w/]*\s+[A-Za-z]', p.get('address', '')):
+                        log(f"  ✗ {p.get('domain_url','?')} — no valid address, skipping")
+                        enriched_results[i] = None
+                        return
+
+                    # For DOM fallback listings, price range wasn't checked before — do it now
+                    if p['purchase_price'] < 800000 or p['purchase_price'] > 1050000:
+                        log(f"  ✗ {p['address']} — price ${p['purchase_price']:,} out of range, skipping")
+                        enriched_results[i] = None
+                        return
+
+                    # Beds/baths from listing page if not already known
+                    if p.get('bedrooms') is None and domain_detail.get('bedrooms') is not None:
+                        p['bedrooms'] = domain_detail['bedrooms']
+                    if p.get('bathrooms') is None and domain_detail.get('bathrooms') is not None:
+                        p['bathrooms'] = domain_detail['bathrooms']
+                    if p.get('parking') is None and domain_detail.get('parking') is not None:
+                        p['parking'] = domain_detail['parking']
+
                     if domain_detail.get('land_size_m2'):
                         p['land_size_m2'] = domain_detail['land_size_m2']
                     if domain_detail.get('building_size_m2'):

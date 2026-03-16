@@ -342,6 +342,7 @@ function renderOverview() {{
   const tbl = document.getElementById('rankingTable');
   tbl.innerHTML = `<thead><tr>
     <th>Rank</th><th>Address</th><th>Suburb</th><th class="c">Price</th>
+    <th class="c">Beds</th><th class="c">Land m²</th><th class="c">Build Yr</th>
     <th class="c">PropTrack</th><th class="c">Rent/Wk</th><th class="c">Gross Yld</th>
     <th class="c">$/Wk (AT)</th><th class="c">IRR</th><th class="c">10yr Equity</th>
     <th class="c">NPV@7%</th><th class="c">Tenanted</th><th class="c">Risk</th><th class="c">Action</th>
@@ -355,12 +356,18 @@ function renderOverview() {{
                      '<span class="chip b">Unknown</span>';
     const ptGap = p.proptrack_gap;
     const ptStr = ptGap!=null ? fmt(p.proptrack_estimate)+(ptGap>0?` <span style="color:var(--green);font-size:10px">+${{(ptGap/1000).toFixed(0)}}k</span>`:'') : '—';
+    const beds = p.bedrooms != null ? p.bedrooms : '—';
+    const land = p.land_size_m2 != null ? p.land_size_m2 + 'm²' : (p.land_size_listed != null ? p.land_size_listed + 'm²' : '—');
+    const buildYr = p.build_year_est || p.build_year_domain || '—';
     return `<tr class="${{rowCls}}">
       <td><span class="chip ${{i===0?'n':i===1?'b':'gr'}}">#${{i+1}}${{i===0?' ★':''}}</span></td>
       <td><a href="#" onclick="jumpDetail('${{p.address}}');return false"
          style="color:var(--blue);font-weight:600;text-decoration:none">${{sAddr(p.address)}}</a></td>
       <td>${{p.suburb||''}}</td>
       <td class="c">${{fmt(p.purchase_price||p.purchase_price_assumed)}}</td>
+      <td class="c">${{beds}}</td>
+      <td class="c">${{land}}</td>
+      <td class="c">${{buildYr}}</td>
       <td class="c">${{ptStr}}</td>
       <td class="c">$${{p.weekly_rent||p.weekly_rent_est||'—'}}/wk</td>
       <td class="c">${{pct(p.gross_yield||p.gross_yield_pct)}}</td>
@@ -1041,16 +1048,22 @@ function renderScenarioResults() {{
   const tbl = document.getElementById('scenarioTable');
   tbl.innerHTML = `<thead><tr>
     <th>Rank</th><th>Address</th><th>Suburb</th>
-    <th class="c">Price</th><th class="c">Rent/Wk</th>
-    <th class="c">Gross Yld</th><th class="c">$/Wk (AT)</th>
+    <th class="c">Price</th><th class="c">Beds</th><th class="c">Land m²</th><th class="c">Build Yr</th>
+    <th class="c">Rent/Wk</th><th class="c">Gross Yld</th><th class="c">$/Wk (AT)</th>
     <th class="c">IRR</th><th class="c">10yr Equity</th>
     <th class="c">NPV@7%</th><th class="c">Total Wealth Yr10</th>
   </tr></thead><tbody>${{res.map((p,i)=>{{
     const v = p.yr1_aftertax_cashflow_pw||0;
+    const beds = p.bedrooms != null ? p.bedrooms : '—';
+    const land = p.land_size_m2 != null ? p.land_size_m2 + 'm²' : (p.land_size_listed != null ? p.land_size_listed + 'm²' : '—');
+    const buildYr = p.build_year_est || p.build_year_domain || '—';
     return `<tr class="${{i===0?'hi-row':i===1?'hi-row am':''}}">
       <td><span class="chip ${{i===0?'n':i===1?'b':'gr'}}">#${{i+1}}${{i===0?' ★':''}}</span></td>
       <td><strong>${{sAddr(p.address)}}</strong></td><td>${{p.suburb}}</td>
       <td class="c">${{fmt(p.purchase_price)}}</td>
+      <td class="c">${{beds}}</td>
+      <td class="c">${{land}}</td>
+      <td class="c">${{buildYr}}</td>
       <td class="c">$${{p.weekly_rent}}/wk</td>
       <td class="c">${{pct(p.gross_yield)}}</td>
       <td class="c"><span class="chip" style="background:${{cfBg(v)}};color:${{cfColor(v)}}">${{v>=0?'+':''}}$${{v}}/wk</span></td>
