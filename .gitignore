@@ -1,0 +1,17 @@
+# Generated output — not committed (rebuilt on each scrape run)
+property_data.json
+property_analysis.html
+scraper_log.txt
+debug_domain.png
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
