@@ -350,6 +350,8 @@ async def scrape_domain_listing(page, url):
         'bedrooms': None,
         'bathrooms': None,
         'parking': None,
+        'price_display': None,
+        'is_auction': False,
     }
     if not url or 'domain.com.au' not in url:
         return result
@@ -383,6 +385,11 @@ async def scrape_domain_listing(page, url):
             const addrPostcode = typeof addrObj === 'object' ? String(addrObj.postcode || '') : '';
             const addrState = typeof addrObj === 'object' ? (addrObj.state || 'QLD') : 'QLD';
 
+            // Price (for single-URL mode where there is no search results page)
+            const pd = summary.priceDetails || summary.price || cp.priceDetails || {};
+            const priceDisplay = typeof pd === 'string' ? pd : (pd.displayPrice || pd.price || '');
+            const isAuction = /auction/i.test(priceDisplay);
+
             return {
                 description: descArr,
                 features: cp.features || [],
@@ -396,6 +403,8 @@ async def scrape_domain_listing(page, url):
                 postcode: addrPostcode,
                 state: addrState,
                 propertyType: summary.propertyType,
+                priceDisplay: priceDisplay,
+                isAuction: isAuction,
             };
         }""")
 
@@ -422,6 +431,9 @@ async def scrape_domain_listing(page, url):
             result['bathrooms'] = data['baths']
         if data.get('parking') is not None:
             result['parking'] = data['parking']
+        if data.get('priceDisplay'):
+            result['price_display'] = data['priceDisplay']
+            result['is_auction'] = bool(data.get('isAuction'))
 
         # Parse description lines for key data
         for line in desc_lines:
@@ -717,6 +729,164 @@ def parse_domain_listing(raw):
         'tenanted_from_listing': tenanted,
         'listing_id': raw.get('listing_id',''),
     }
+
+async def run_single(url: str) -> dict:
+    """Scrape and assess a single Domain.com.au listing URL.
+    Upserts the result into property_data.json and rebuilds the HTML.
+    Returns the enriched property dict, or raises on failure.
+    """
+    from playwright.async_api import async_playwright
+
+    # Normalise URL — accept bare IDs like domain.com.au/2020685507
+    if not url.startswith('http'):
+        url = 'https://' + url
+    if re.match(r'https?://www\.domain\.com\.au/\d+', url) and '?' not in url:
+        pass  # bare numeric ID — valid listing URL
+    log(f"\n── Single property assessment ──────────────────────────────")
+    log(f"URL: {url}")
+    log(f"Time: {datetime.now().strftime('%d %b %Y %H:%M')}\n")
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                       'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        )
+        tab = await context.new_page()
+        try:
+            # ── 1. Domain listing page ─────────────────────────────────
+            domain_detail = await scrape_domain_listing(tab, url)
+
+            address = domain_detail.get('address_full') or ''
+            suburb  = domain_detail.get('suburb') or ''
+            postcode = domain_detail.get('postcode') or ''
+
+            if not address or not re.match(r'^\d+[\w/]*\s+[A-Za-z]', address):
+                raise ValueError(f"Could not extract a valid street address from listing page")
+
+            # Parse price from listing page
+            price_display = domain_detail.get('price_display') or ''
+            is_auction    = domain_detail.get('is_auction') or False
+            price_numeric = parse_price(price_display) if price_display else None
+
+            if price_numeric is None and not is_auction:
+                raise ValueError(f"Could not determine price from listing (got: {price_display!r})")
+
+            purchase_price = price_numeric or 0
+
+            p = {
+                'id': re.sub(r'[^a-zA-Z0-9_]', '_', address + '_' + suburb),
+                'domain_url': url,
+                'address': address,
+                'suburb': suburb,
+                'postcode': postcode,
+                'price_display': price_display,
+                'price_numeric': price_numeric,
+                'purchase_price': purchase_price,
+                'purchase_price_assumed': purchase_price,
+                'is_auction': is_auction,
+                'bedrooms':  domain_detail.get('bedrooms'),
+                'bathrooms': domain_detail.get('bathrooms'),
+                'parking':   domain_detail.get('parking'),
+                'land_size_m2': domain_detail.get('land_size_m2'),
+                'building_size_m2': domain_detail.get('building_size_m2'),
+                'features_domain': domain_detail.get('features_domain', []),
+                'description': domain_detail.get('full_description', ''),
+                'manually_added': True,
+            }
+
+            # Beds filter
+            beds = p.get('bedrooms') or 0
+            if MIN_BEDROOMS > 0 and beds and beds < MIN_BEDROOMS:
+                raise ValueError(f"{beds} beds < minimum {MIN_BEDROOMS}")
+            # Land filter
+            land = p.get('land_size_m2') or 0
+            if MIN_LAND_SIZE_M2 > 0 and land and land < MIN_LAND_SIZE_M2:
+                raise ValueError(f"Land {land}m² < minimum {MIN_LAND_SIZE_M2}m²")
+
+            # Build year
+            if domain_detail.get('build_year_domain'):
+                p['build_year_est'] = domain_detail['build_year_domain']
+            else:
+                p['build_year_est'] = 2015
+                m = re.search(r'built\s+(?:in\s+)?(\d{4})', p.get('description',''), re.I)
+                if m: p['build_year_est'] = int(m.group(1))
+
+            # Rent
+            if domain_detail.get('weekly_rent_appraisal'):
+                p['weekly_rent'] = domain_detail['weekly_rent_appraisal']
+                p['rent_source'] = 'domain_appraisal'
+            else:
+                p['weekly_rent'] = round(purchase_price * 0.00081)
+                p['rent_source'] = 'estimate'
+
+            # Tenancy
+            if domain_detail.get('currently_tenanted') is not None:
+                p['currently_tenanted'] = domain_detail['currently_tenanted']
+
+            log(f"  Address : {address}, {suburb} {postcode}")
+            log(f"  Price   : {price_display} → ${purchase_price:,}")
+            log(f"  Beds    : {p.get('bedrooms')}  Land: {p.get('land_size_m2')}m²")
+
+            # ── 2. property.com.au ─────────────────────────────────────
+            risk_data = await scrape_property_com(tab, address, suburb, postcode)
+            p.update({k: v for k, v in risk_data.items()
+                      if k not in ('currently_tenanted', 'land_size_m2') or p.get(k) is None})
+
+            if p.get('proptrack_estimate'):
+                p['proptrack_gap'] = p['proptrack_estimate'] - purchase_price
+            else:
+                p['proptrack_estimate'] = purchase_price
+                p['proptrack_gap'] = 0
+
+            if p.get('rent_source') == 'estimate' and risk_data.get('rental_estimate_pw'):
+                p['weekly_rent'] = risk_data['rental_estimate_pw']
+                p['rent_source'] = 'propcom_estimate'
+
+            # ── 3. Financial model ─────────────────────────────────────
+            model = financial_model(p)
+            p.update(model)
+
+            risk = (2 if p.get('flood_overlay') else 0) + (1 if p.get('bushfire_overlay') else 0)
+            p['risk_score'] = risk
+            p['risk_label'] = {0:'Low',1:'Moderate',2:'High',3:'Very High'}.get(risk,'Unknown')
+            p['scraped_at'] = datetime.now().isoformat()
+
+            log(f"  Rent    : ${p.get('weekly_rent')}/wk ({p.get('rent_source')})")
+            log(f"  IRR     : {p.get('irr')}%   AT: ${p.get('yr1_aftertax_cashflow_pw')}/wk")
+            log(f"  Risk    : {p.get('risk_label')}  PropTrack: ${p.get('proptrack_estimate'):,}")
+
+            # ── 4. Upsert into JSON ────────────────────────────────────
+            data = {'meta': {}, 'assumptions': {}, 'properties': []}
+            if DATA_PATH.exists():
+                try:
+                    data = json.loads(DATA_PATH.read_text())
+                except Exception:
+                    pass
+
+            prop_id = p['id']
+            existing = [x for x in data.get('properties', []) if x.get('id') != prop_id
+                        and re.sub(r'[^a-z0-9]', '', (x.get('domain_url') or '').lower()) !=
+                            re.sub(r'[^a-z0-9]', '', url.lower())]
+            data['properties'] = existing + [p]
+            data['meta']['generated'] = datetime.now().isoformat()
+            data['meta']['generated_display'] = datetime.now().strftime('%d %b %Y %H:%M AEST')
+            data['meta']['total_found'] = len(data['properties'])
+
+            DATA_PATH.write_text(json.dumps(data, indent=2, default=str))
+            log(f"\n✓ Upserted into {DATA_PATH} ({len(data['properties'])} total properties)")
+
+            # ── 5. Rebuild HTML ────────────────────────────────────────
+            import subprocess as _sp
+            _sp.run([sys.executable, str(BASE_DIR / 'build_site_v2.py')],
+                    capture_output=True, timeout=60)
+            log(f"✓ Dashboard rebuilt")
+
+            return p
+
+        finally:
+            await browser.close()
+
 
 async def run():
     from playwright.async_api import async_playwright
@@ -1062,4 +1232,17 @@ def build_html(data, out_path):
 
 
 if __name__ == '__main__':
-    asyncio.run(run())
+    # Single-URL mode: python3 scraper_full.py <domain_url>
+    if len(sys.argv) > 1 and ('domain.com.au' in sys.argv[1] or sys.argv[1].isdigit()):
+        url_arg = sys.argv[1]
+        if url_arg.isdigit():
+            url_arg = f'https://www.domain.com.au/{url_arg}'
+        try:
+            result = asyncio.run(run_single(url_arg))
+            print(f"\nDone — {result.get('address')}, {result.get('suburb')}")
+            sys.exit(0)
+        except Exception as e:
+            print(f"\nError: {e}")
+            sys.exit(1)
+    else:
+        asyncio.run(run())

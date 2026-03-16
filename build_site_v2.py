@@ -154,6 +154,21 @@ html = f"""<!DOCTYPE html>
   .f-reset {{ background:none; border:1.5px solid var(--border); border-radius:8px; padding:6px 14px; font-size:12px; font-weight:600; color:#666; cursor:pointer; transition:all .15s; white-space:nowrap; }}
   .f-reset:hover {{ background:var(--lgrey); color:var(--navy); }}
 
+  /* ── URL assess bar ── */
+  .assess-bar {{ background:white; border-radius:var(--radius); padding:12px 18px; box-shadow:var(--shadow); margin-bottom:14px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }}
+  .assess-bar input {{ flex:1; min-width:260px; padding:8px 12px; border-radius:8px; border:1.5px solid var(--border); font-size:13px; color:var(--text); }}
+  .assess-bar input:focus {{ outline:none; border-color:var(--blue); }}
+  .assess-btn {{ background:var(--blue); color:white; border:none; border-radius:8px; padding:8px 18px; font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap; }}
+  .assess-btn:disabled {{ background:#aaa; cursor:default; }}
+  .assess-btn:hover:not(:disabled) {{ background:#1557b0; }}
+  .server-badge {{ font-size:11px; font-weight:700; border-radius:6px; padding:3px 9px; white-space:nowrap; }}
+  .server-badge.on  {{ background:#d4edda; color:#155724; }}
+  .server-badge.off {{ background:#f8d7da; color:#721c24; }}
+  .assess-log {{ font-size:12px; color:#444; background:var(--lgrey); border-radius:6px; padding:8px 12px; width:100%; max-height:120px; overflow-y:auto; white-space:pre-wrap; font-family:monospace; display:none; }}
+  /* ── Delete button ── */
+  .del-btn {{ background:none; border:none; cursor:pointer; color:#c0392b; font-size:15px; font-weight:700; line-height:1; padding:2px 6px; border-radius:4px; }}
+  .del-btn:hover {{ background:#fdecea; }}
+
   .sc-control {{ background:white; border-radius:var(--radius); padding:16px 18px; box-shadow:var(--shadow); }}
   .sc-control label {{ display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:#888; margin-bottom:6px; }}
   .sc-control .sc-row {{ display:flex; align-items:center; gap:10px; }}
@@ -195,6 +210,15 @@ html = f"""<!DOCTYPE html>
 <!-- ═══════════════════════════════════════ OVERVIEW ═══ -->
 <div id="page-overview" class="page active">
   <div class="cards" id="overviewCards"></div>
+
+  <!-- ── Assess-a-property bar ── -->
+  <div class="assess-bar" id="assessBar">
+    <span class="server-badge off" id="serverBadge" title="Run: python3 serve.py">⬤ Server offline</span>
+    <input type="url" id="assessUrl" placeholder="Paste a Domain.com.au listing URL to assess…" disabled>
+    <button class="assess-btn" id="assessBtn" onclick="doAssess()" disabled>Assess Property</button>
+    <pre class="assess-log" id="assessLog"></pre>
+  </div>
+
   <div id="filterBar" class="filter-bar"></div>
   <div class="section-title">Ranked Shortlist <span class="pill" id="rankingPill">Sorted by 10-Year IRR · Click property name to deep-dive</span></div>
   <div class="tbl-wrap"><table id="rankingTable"></table></div>
@@ -397,6 +421,82 @@ function resetFilters() {{
   applyFilters();
 }}
 
+// ── Server connectivity & assess/delete ─────────────────────────────────────
+const SERVER = 'http://localhost:8787';
+let serverOnline = false;
+
+async function pingServer() {{
+  try {{
+    const r = await fetch(SERVER + '/api/ping', {{signal: AbortSignal.timeout(1500)}});
+    serverOnline = r.ok;
+  }} catch(e) {{ serverOnline = false; }}
+  const badge = document.getElementById('serverBadge');
+  const inp   = document.getElementById('assessUrl');
+  const btn   = document.getElementById('assessBtn');
+  if (serverOnline) {{
+    badge.textContent = '⬤ Server online';
+    badge.className   = 'server-badge on';
+    inp.disabled = false;
+    btn.disabled = false;
+  }} else {{
+    badge.textContent = '⬤ Server offline – run: python3 serve.py';
+    badge.className   = 'server-badge off';
+    inp.disabled = true;
+    btn.disabled = true;
+  }}
+}}
+pingServer();
+setInterval(pingServer, 10000);
+
+async function doAssess() {{
+  const url = document.getElementById('assessUrl').value.trim();
+  if (!url) {{ alert('Paste a Domain.com.au listing URL first'); return; }}
+  const btn = document.getElementById('assessBtn');
+  const log = document.getElementById('assessLog');
+  btn.disabled = true;
+  btn.textContent = 'Assessing…';
+  log.style.display = 'block';
+  log.textContent = 'Running scraper — this takes about 30–60 seconds…';
+  try {{
+    const r = await fetch(SERVER + '/api/scrape', {{
+      method: 'POST',
+      headers: {{'Content-Type':'application/json'}},
+      body: JSON.stringify({{url}})
+    }});
+    const data = await r.json();
+    log.textContent = data.log || '(no output)';
+    if (data.ok) {{
+      log.textContent += '\n\n✓ Done! Reloading dashboard…';
+      setTimeout(() => window.location.reload(), 1500);
+    }} else {{
+      log.textContent += '\n\n✗ Scrape failed — see log above';
+      btn.disabled = false;
+      btn.textContent = 'Assess Property';
+    }}
+  }} catch(e) {{
+    log.textContent = 'Error: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = 'Assess Property';
+  }}
+}}
+
+async function doDelete(propId, address) {{
+  if (!serverOnline) {{ alert('Start serve.py to enable delete.'); return; }}
+  if (!confirm(`Remove "${{address}}" from the shortlist?`)) return;
+  try {{
+    const r = await fetch(SERVER + '/api/property/' + propId, {{method:'DELETE'}});
+    const data = await r.json();
+    if (data.ok) {{
+      alert(`Removed. Dashboard will reload.`);
+      setTimeout(() => window.location.reload(), 800);
+    }} else {{
+      alert('Delete failed: ' + (data.error || 'unknown error'));
+    }}
+  }} catch(e) {{
+    alert('Error: ' + e.message);
+  }}
+}}
+
 function buildFilterBar() {{
   const suburbs = [...new Set(ranked.map(p=>p.suburb).filter(Boolean))].sort();
   const maxLand = Math.max(...ranked.map(p=>p.land_size_m2||p.land_size_listed||0));
@@ -503,7 +603,10 @@ function renderRankingTable(list) {{
       <td class="c">${{fmt(p.npv_7pct||p.npv_at_7pct)}}</td>
       <td class="c">${{tenanted}}</td>
       <td class="c"><span class="chip ${{rCls}}">${{rLabel}}</span></td>
-      <td class="c"><a href="#" onclick="jumpDetail('${{p.address}}');return false" style="color:var(--blue);font-size:12px;font-weight:600">Deep-Dive →</a></td>
+      <td class="c" style="white-space:nowrap">
+        <a href="#" onclick="jumpDetail('${{p.address}}');return false" style="color:var(--blue);font-size:12px;font-weight:600">Deep-Dive →</a>
+        ${{serverOnline ? `&nbsp;<button class="del-btn" title="Remove from shortlist" onclick="doDelete('${{encodeURIComponent(p.id)}}','${{(p.address||'').replace(/'/g,\\"\\")}}');return false">✕</button>` : ''}}
+      </td>
     </tr>`;
   }}).join('')}}</tbody>`;
 }}
