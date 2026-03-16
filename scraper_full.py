@@ -38,6 +38,7 @@ DOMAIN_URL = (
 # model, saving time and keeping the output focused on quality stock.
 MIN_LAND_SIZE_M2  = 300   # skip properties with known land size below this
 MIN_BEDROOMS      = 4     # skip properties with known bedroom count below this
+CACHE_TTL_DAYS    = 7     # re-scrape a property if cached data is older than this many days
 
 # ── Financial model constants ─────────────────────────────────────────────────
 DEPOSIT_PCT       = 0.20
@@ -800,6 +801,24 @@ async def run():
 
         log(f"\n{len(parsed)} listings in range after filtering and dedup\n")
 
+        # ── Load existing cache ────────────────────────────────────────────
+        cache = {}
+        if DATA_PATH.exists():
+            try:
+                with open(DATA_PATH) as f:
+                    old_data = json.load(f)
+                for prop in old_data.get('properties', []):
+                    # Prefer domain_url as cache key (most stable identifier)
+                    ck = re.sub(r'[^a-z0-9]', '', (prop.get('domain_url') or '').lower().rstrip('/'))
+                    if not ck:
+                        ck = re.sub(r'[^a-z0-9]', '', (prop.get('address','') + prop.get('suburb','')).lower())
+                    if ck:
+                        cache[ck] = prop
+                log(f"Loaded {len(cache)} cached properties (TTL={CACHE_TTL_DAYS}d)\n")
+            except Exception as e:
+                log(f"Cache load failed (will scrape fresh): {e}")
+                cache = {}
+
         # ── Step 3: Enrich all listings in parallel (5 tabs at once) ─────
         CONCURRENCY = 5
         semaphore = asyncio.Semaphore(CONCURRENCY)
@@ -808,6 +827,24 @@ async def run():
         async def enrich_one(i, p):
             async with semaphore:
                 log(f"[{i+1}/{len(parsed)}] → {p['address']}, {p['suburb']}")
+
+                # ── Cache check ────────────────────────────────────────────
+                ck = re.sub(r'[^a-z0-9]', '', (p.get('domain_url') or '').lower().rstrip('/'))
+                if not ck:
+                    ck = re.sub(r'[^a-z0-9]', '', (p.get('address','') + p.get('suburb','')).lower())
+                if ck and ck in cache:
+                    cached = cache[ck]
+                    scraped_at = cached.get('scraped_at')
+                    if scraped_at:
+                        try:
+                            age_days = (datetime.now() - datetime.fromisoformat(scraped_at)).days
+                            if age_days < CACHE_TTL_DAYS:
+                                log(f"  ✓ CACHED ({age_days}d old) — skipping scrape")
+                                enriched_results[i] = cached
+                                return
+                        except Exception:
+                            pass  # malformed date — fall through to fresh scrape
+
                 tab = await context.new_page()
                 try:
                     # 3a. Domain individual listing page
@@ -921,6 +958,9 @@ async def run():
                     p['risk_score'] = risk
                     p['risk_label'] = {0:'Low',1:'Moderate',2:'High',3:'Very High'}.get(risk,'Unknown')
 
+                    # Timestamp for cache TTL
+                    p['scraped_at'] = datetime.now().isoformat()
+
                     enriched_results[i] = p
                     log(f"  ✓ {p['address']} — ${p.get('weekly_rent')}/wk  IRR={p.get('irr')}%  AT=${p.get('yr1_aftertax_cashflow_pw')}/wk  tenanted={p.get('currently_tenanted')}")
                 except Exception as e:
@@ -932,7 +972,32 @@ async def run():
         log(f"Starting parallel enrichment ({CONCURRENCY} tabs)…\n")
         await asyncio.gather(*[enrich_one(i, p) for i, p in enumerate(parsed)])
         enriched = [r for r in enriched_results if r is not None]
-        log(f"\n✓ Enriched {len(enriched)} properties")
+        log(f"\n✓ Enriched {len(enriched)} properties (fresh + cache hits from today's search)")
+
+        # ── Merge: keep recently cached properties not in today's search ──
+        # (e.g. temporarily delisted, price moved just outside range)
+        today_keys = set()
+        for p in enriched:
+            ck = re.sub(r'[^a-z0-9]', '', (p.get('domain_url') or '').lower().rstrip('/'))
+            if not ck:
+                ck = re.sub(r'[^a-z0-9]', '', (p.get('address','') + p.get('suburb','')).lower())
+            if ck:
+                today_keys.add(ck)
+        kept_from_cache = 0
+        for ck, cached_prop in cache.items():
+            if ck not in today_keys:
+                scraped_at = cached_prop.get('scraped_at')
+                if scraped_at:
+                    try:
+                        age_days = (datetime.now() - datetime.fromisoformat(scraped_at)).days
+                        if age_days < CACHE_TTL_DAYS:
+                            enriched.append(cached_prop)
+                            kept_from_cache += 1
+                            log(f"  + Retained from cache ({age_days}d old, not in today's search): {cached_prop.get('address','?')}")
+                    except Exception:
+                        pass
+        if kept_from_cache:
+            log(f"  → {kept_from_cache} properties retained from cache\n")
 
         await browser.close()
 
@@ -949,6 +1014,7 @@ async def run():
                 'suburbs_searched': ['Pimpama','Coomera','Upper Coomera','Ormeau','Helensvale','Hope Island',
                                      'Ripley','Deebing Heights','Redbank Plains','Yarrabilba','Loganlea'],
                 'total_found': len(enriched),
+                'cache_ttl_days': CACHE_TTL_DAYS,
             },
             'assumptions': {
                 'deposit_pct': DEPOSIT_PCT, 'interest_rate': INTEREST_RATE,
