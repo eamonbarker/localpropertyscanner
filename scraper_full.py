@@ -56,6 +56,7 @@ MARGINAL_RATE_N   = 0.45
 AVG_MARGINAL      = (MARGINAL_RATE_E + MARGINAL_RATE_N) / 2
 CGT_DISCOUNT      = 0.50
 SELLING_COSTS_PCT = 0.025
+INFLATION_RATE    = 0.025   # for real (inflation-adjusted) return calculations
 
 def log(msg):
     ts = datetime.now().strftime('%H:%M:%S')
@@ -476,10 +477,11 @@ async def scrape_domain_listing(page, url):
 
 
 async def scrape_property_com(page, address, suburb, postcode):
-    """Get risk data, PropTrack estimate, tenancy info from property.com.au."""
+    """Get risk data, PropTrack estimate, rental estimate and tenancy from property.com.au."""
     result = {
         'flood_overlay': None, 'bushfire_overlay': None, 'heritage_overlay': None,
         'proptrack_estimate': None, 'proptrack_range_low': None, 'proptrack_range_high': None,
+        'rental_estimate_pw': None,   # property.com.au's own rental estimate
         'land_size_m2': None, 'building_size_m2': None, 'ground_elevation_m': None,
         'last_leased_date': None, 'rental_history': [],
         'school_catchments': [], 'nbn_type': None,
@@ -487,114 +489,161 @@ async def scrape_property_com(page, address, suburb, postcode):
         'description_snippet': None,
     }
     try:
-        # Build search query
-        search_q = f"{address} {suburb} {postcode}".strip()
-        search_url = f"https://www.property.com.au/search/?q={search_q.replace(' ','+')}"
+        # ── Navigate: try direct URL construction first, then search ──────────
+        suburb_slug = suburb.lower().replace(' ', '-')
+        street_parts = address.lower().split()
+        num = street_parts[0] if street_parts else ''
+        street_name = '-'.join(street_parts[1:]) if len(street_parts) > 1 else ''
+        for old, new in [('crescent','cres'),('street','st'),('avenue','ave'),('court','ct'),
+                         ('drive','dr'),('road','rd'),('place','pl'),('close','cl'),
+                         ('circuit','cct'),('way','wy'),('terrace','tce'),('boulevard','blvd')]:
+            street_name = street_name.replace(old, new)
+        direct_url = f"https://www.property.com.au/qld/{suburb_slug}-{postcode}/{street_name}/{num}/"
 
-        await page.goto(search_url, wait_until='networkidle', timeout=30000)
-        await page.wait_for_timeout(2000)
+        landed = False
+        for attempt_url in [direct_url]:
+            try:
+                await page.goto(attempt_url, wait_until='domcontentloaded', timeout=25000)
+                # Wait for the dynamic summary paragraph to render
+                try:
+                    await page.wait_for_selector('text=About the property', timeout=7000)
+                except:
+                    await page.wait_for_timeout(4000)
+                # Check if we landed on a real property page (has estimated value or address)
+                current_url = page.url
+                if '/pid-' in current_url or suburb_slug in current_url:
+                    result['property_com_url'] = current_url
+                    landed = True
+                    break
+            except:
+                pass
 
-        # Click first result
-        first_result = page.locator('a[href*="/pid-"]').first
-        if await first_result.is_visible(timeout=5000):
-            href = await first_result.get_attribute('href')
-            prop_url = 'https://www.property.com.au' + href if href.startswith('/') else href
-            result['property_com_url'] = prop_url
-            await page.goto(prop_url, wait_until='networkidle', timeout=30000)
-            await page.wait_for_timeout(2000)
-        else:
-            # Try direct URL construction
-            suburb_slug = suburb.lower().replace(' ','-')
-            street_parts = address.lower().split()
-            # street name without number
-            num = street_parts[0]
-            street_name = '-'.join(street_parts[1:])
-            # common abbreviations
-            street_name = street_name.replace('crescent','cres').replace('street','st') \
-                                     .replace('avenue','ave').replace('court','ct') \
-                                     .replace('drive','dr').replace('road','rd') \
-                                     .replace('place','pl').replace('close','cl')
-            est_url = f"https://www.property.com.au/qld/{suburb_slug}-{postcode}/{street_name}/{num}/"
-            await page.goto(est_url, wait_until='networkidle', timeout=30000)
-            await page.wait_for_timeout(2000)
-            result['property_com_url'] = page.url
+        if not landed:
+            # Fall back to search
+            search_q = f"{address} {suburb} {postcode}".strip()
+            search_url = f"https://www.property.com.au/search/?q={search_q.replace(' ','+')}"
+            await page.goto(search_url, wait_until='domcontentloaded', timeout=25000)
+            await page.wait_for_timeout(3000)
+            first_result = page.locator('a[href*="/pid-"]').first
+            if await first_result.is_visible(timeout=5000):
+                href = await first_result.get_attribute('href')
+                prop_url = 'https://www.property.com.au' + href if href.startswith('/') else href
+                result['property_com_url'] = prop_url
+                await page.goto(prop_url, wait_until='domcontentloaded', timeout=25000)
+                try:
+                    await page.wait_for_selector('text=About the property', timeout=7000)
+                except:
+                    await page.wait_for_timeout(4000)
 
-        # Extract data from the page
+        # ── Extract full page text ─────────────────────────────────────────────
         text = await page.evaluate("() => document.body.innerText")
+        full = text  # keep full text for regex searches across line breaks
         lines = [l.strip() for l in text.split('\n') if l.strip()]
+        full_lower = full.lower()
 
-        # Overlays
-        def find_overlay(name, lines):
+        # ── Overlays — parse the "About the property" summary sentence ────────
+        # property.com.au uses natural language in a single paragraph, e.g.:
+        #   "no flood or heritage overlays detected. We have detected a bushfire overlay."
+        # Flood
+        if re.search(r'no flood\b[^.]*overlay|flood overlay[^.]*not detected|no flood overlay', full_lower):
+            result['flood_overlay'] = False
+        elif re.search(r'detected[^.]*flood overlay|flood overlay[^.]*detected|flood overlay on this', full_lower):
+            result['flood_overlay'] = True
+        # Bushfire
+        if re.search(r'no bushfire[^.]*overlay|bushfire overlay[^.]*not detected|no bushfire overlay', full_lower):
+            result['bushfire_overlay'] = False
+        elif re.search(r'detected[^.]*bushfire overlay|bushfire overlay[^.]*detected|bushfire overlay on this', full_lower):
+            result['bushfire_overlay'] = True
+        # Heritage
+        if re.search(r'no heritage[^.]*overlay|heritage overlay[^.]*not detected|no heritage overlay', full_lower):
+            result['heritage_overlay'] = False
+        elif re.search(r'detected[^.]*heritage overlay|heritage overlay[^.]*detected|heritage overlay on this', full_lower):
+            result['heritage_overlay'] = True
+
+        # ── PropTrack estimate ────────────────────────────────────────────────
+        # Primary: summary sentence "estimated property value of X is $930,000"
+        m = re.search(r'property value[^.]*?\$\s*([\d,]+)', full, re.I)
+        if m:
+            val = int(m.group(1).replace(',', ''))
+            if 300000 < val < 6000000:
+                result['proptrack_estimate'] = val
+
+        # Secondary: standalone dollar amount after "Property value" heading
+        if not result['proptrack_estimate']:
             for i, l in enumerate(lines):
-                if name.lower() in l.lower():
-                    # next non-empty line should be Found/Not found
-                    for j in range(i+1, min(i+4, len(lines))):
-                        if 'found' in lines[j].lower():
-                            return 'Not Found' not in lines[j] and 'not found' not in lines[j].lower()
-            # check inline text
-            combined = ' '.join(lines)
-            if f'{name} overlay' in combined.lower():
-                m = re.search(rf'{name}.*?overlay.*?(found|not found)', combined, re.I)
-                if m: return 'not found' not in m.group(1).lower()
-            return None
-
-        result['flood_overlay']    = find_overlay('flood', lines)
-        result['bushfire_overlay'] = find_overlay('bushfire', lines)
-        result['heritage_overlay'] = find_overlay('heritage', lines)
-
-        # Also check the summary paragraph
-        for l in lines:
-            if 'bushfire overlay' in l.lower() and 'flood overlay' in l.lower():
-                result['bushfire_overlay'] = 'no bushfire' not in l.lower()
-                result['flood_overlay']    = 'no flood' not in l.lower()
-
-        # PropTrack estimate
-        for i, l in enumerate(lines):
-            if 'estimated value' in l.lower() or 'property value' in l.lower():
-                # Look ahead for dollar amount
-                for j in range(i+1, min(i+6, len(lines))):
-                    m = re.search(r'\$([\d,]+)\s*[-–]\s*\$([\d,]+)', lines[j])
-                    if m:
-                        result['proptrack_range_low']  = int(m.group(1).replace(',',''))
-                        result['proptrack_range_high'] = int(m.group(2).replace(',',''))
-                        result['proptrack_estimate']   = (result['proptrack_range_low'] + result['proptrack_range_high']) // 2
+                if l.lower().strip() in ('property value', 'estimated value'):
+                    for j in range(i + 1, min(i + 10, len(lines))):
+                        # Handle "$930,000" or "$930k" or "930,000"
+                        m2 = re.search(r'^\$?([\d,]+)(k?)$', lines[j].strip(), re.I)
+                        if m2:
+                            raw = float(m2.group(1).replace(',', ''))
+                            val = int(raw * 1000 if m2.group(2).lower() == 'k' else raw)
+                            if 300000 < val < 6000000:
+                                result['proptrack_estimate'] = val
+                                break
+                    if result['proptrack_estimate']:
                         break
-                    m2 = re.search(r'\$([\d,]+)', lines[j])
-                    if m2 and not result['proptrack_estimate']:
-                        val = int(m2.group(1).replace(',',''))
-                        if 500000 < val < 3000000:
-                            result['proptrack_estimate'] = val
 
-        # Simpler estimate from intro paragraph
-        for l in lines:
-            m = re.search(r'estimated.*?\$\s*([\d,]+)', l, re.I)
-            if m:
-                val = int(m.group(1).replace(',',''))
-                if 500000 < val < 3000000 and not result['proptrack_estimate']:
-                    result['proptrack_estimate'] = val
+        # PropTrack range — look for two "$Xk" values near each other
+        range_m = re.findall(r'\$([\d]+(?:\.\d+)?)k\b', full_lower)
+        if len(range_m) >= 2:
+            candidates = [int(float(x) * 1000) for x in range_m if 300 < float(x) < 6000]
+            if len(candidates) >= 2:
+                result['proptrack_range_low']  = candidates[0]
+                result['proptrack_range_high'] = candidates[1]
+                if not result['proptrack_estimate']:
+                    result['proptrack_estimate'] = (candidates[0] + candidates[1]) // 2
 
-        # Land / building size
-        for l in lines:
-            m = re.search(r'land\s*size[:\s]*(\d+)\s*m', l, re.I)
-            if m: result['land_size_m2'] = int(m.group(1))
-            m = re.search(r'building\s*(?:size|coverage)?[:\s]*(\d+)\s*m', l, re.I)
-            if m: result['building_size_m2'] = int(m.group(1))
-            m = re.search(r'ground\s*elevation[:\s]*(\d+)\s*m', l, re.I)
-            if m: result['ground_elevation_m'] = int(m.group(1))
+        # ── Rental estimate from property.com.au ──────────────────────────────
+        # Summary: "potential rental income of $645 per week"
+        m = re.search(r'rental income[^.]*?\$\s*([\d,]+)\s*per\s*week', full, re.I)
+        if not m:
+            # "$645pw" pattern
+            m = re.search(r'\$(\d+)pw\b', full)
+        if m:
+            rent_val = int(m.group(1).replace(',', ''))
+            if 200 < rent_val < 5000:
+                result['rental_estimate_pw'] = rent_val
 
-        # NBN
-        for l in lines:
-            if 'nbn' in l.lower():
-                if 'fibre to the premises' in l.lower() or 'fttp' in l.lower():
-                    result['nbn_type'] = 'FTTP'
-                elif 'fibre to the node' in l.lower() or 'fttn' in l.lower():
-                    result['nbn_type'] = 'FTTN'
-                elif 'hybrid fibre' in l.lower() or 'hfc' in l.lower():
-                    result['nbn_type'] = 'HFC'
-                elif 'nbn' in l.lower():
+        # ── Land / building size ───────────────────────────────────────────────
+        m = re.search(r'sits?\s+on\s+a\s+([\d,]+)\s*m²', full, re.I)
+        if m: result['land_size_m2'] = int(m.group(1).replace(',', ''))
+        if not result['land_size_m2']:
+            m = re.search(r'([\d,]+)\s*m²\s*(?:lot|land)', full, re.I)
+            if m: result['land_size_m2'] = int(m.group(1).replace(',', ''))
+        m = re.search(r'building\s*(?:size|area)?[:\s]*([\d,]+)\s*m', full, re.I)
+        if m: result['building_size_m2'] = int(m.group(1).replace(',', ''))
+
+        # ── NBN — look at context window around any NBN/fibre mention ─────────
+        for i, l in enumerate(lines):
+            l_lower = l.lower()
+            if 'nbn' in l_lower or 'fibre' in l_lower or 'broadband' in l_lower:
+                ctx = ' '.join(lines[max(0, i-1):min(len(lines), i+3)]).lower()
+                if 'fibre to the premises' in ctx or 'fttp' in ctx:
+                    result['nbn_type'] = 'FTTP'; break
+                elif 'fibre to the curb' in ctx or 'fttc' in ctx:
+                    result['nbn_type'] = 'FTTC'; break
+                elif 'fibre to the node' in ctx or 'fttn' in ctx:
+                    result['nbn_type'] = 'FTTN'; break
+                elif 'hybrid fibre' in ctx or 'hfc' in ctx:
+                    result['nbn_type'] = 'HFC'; break
+                elif 'nbn' in ctx:
                     result['nbn_type'] = 'NBN'
 
-        # Tenancy / lease history
+        # ── Schools — from summary paragraph ──────────────────────────────────
+        school_m = re.findall(r'catchment of ([^.]+?)(?:\.|and\s+\w+\s+State)', full, re.I)
+        if school_m:
+            # Split on "and", strip
+            parts = re.split(r'\band\b', school_m[0], flags=re.I)
+            result['school_catchments'] = [s.strip() for s in parts if s.strip()][:4]
+        if not result['school_catchments']:
+            for l in lines:
+                if re.search(r'\b(state school|secondary college|high school|college|academy)\b', l, re.I):
+                    if len(l) < 100 and l not in result['school_catchments']:
+                        result['school_catchments'].append(l.strip())
+            result['school_catchments'] = result['school_catchments'][:4]
+
+        # ── Tenancy / lease history ────────────────────────────────────────────
         leased_dates = []
         rental_history = []
         for i, l in enumerate(lines):
@@ -602,26 +651,16 @@ async def scrape_property_com(page, address, suburb, postcode):
                 leased_dates.append(l.strip())
             m = re.search(r'\$([\d,]+)\s*per\s*week', l, re.I)
             if m:
-                rental_history.append(int(m.group(1).replace(',','')))
-
+                rental_history.append(int(m.group(1).replace(',', '')))
         if leased_dates:
             result['last_leased_date'] = leased_dates[0]
-        result['rental_history'] = rental_history[:8]  # last 8 rental prices
-
-        # School catchments
-        schools = []
-        for l in lines:
-            if 'school' in l.lower() and ('zoned' in l.lower() or 'catchment' in l.lower()):
-                schools.append(l.strip())
-            elif re.search(r'\b(state school|secondary college|college|academy)\b', l, re.I):
-                if l not in schools and len(l) < 80:
-                    schools.append(l.strip())
-        result['school_catchments'] = schools[:4]
-
-        # Is currently tenanted?
+        result['rental_history'] = rental_history[:8]
         result['currently_tenanted'] = is_tenanted('', '\n'.join(leased_dates))
 
-        log(f"  property.com.au: flood={result['flood_overlay']} bush={result['bushfire_overlay']} est=${result['proptrack_estimate']} tenanted={result['currently_tenanted']}")
+        log(f"  property.com.au: flood={result['flood_overlay']} bush={result['bushfire_overlay']} "
+            f"heritage={result['heritage_overlay']} est=${result['proptrack_estimate']} "
+            f"rent_est=${result['rental_estimate_pw']}/wk nbn={result['nbn_type']} "
+            f"schools={result['school_catchments'][:1]}")
 
     except Exception as e:
         log(f"  property.com.au error: {e}")
@@ -866,7 +905,10 @@ async def run():
                         p['proptrack_estimate'] = p['purchase_price']
                         p['proptrack_gap'] = 0
 
-                    if p.get('rent_source') == 'estimate' and p.get('rental_history'):
+                    if p.get('rent_source') == 'estimate' and risk_data.get('rental_estimate_pw'):
+                        p['weekly_rent'] = risk_data['rental_estimate_pw']
+                        p['rent_source'] = 'propcom_estimate'
+                    elif p.get('rent_source') == 'estimate' and p.get('rental_history'):
                         p['weekly_rent'] = sorted(p['rental_history'], reverse=True)[0]
                         p['rent_source'] = 'propcom_history'
 
@@ -911,6 +953,7 @@ async def run():
             'assumptions': {
                 'deposit_pct': DEPOSIT_PCT, 'interest_rate': INTEREST_RATE,
                 'cap_growth_rate': CAP_GROWTH_RATE, 'rental_growth': RENTAL_GROWTH,
+                'inflation_rate': INFLATION_RATE,
                 'vacancy_rate': VACANCY_RATE, 'pm_rate': PM_RATE,
                 'marginal_rate_eamon': MARGINAL_RATE_E, 'marginal_rate_nadeene': MARGINAL_RATE_N,
                 'avg_marginal': AVG_MARGINAL, 'cgt_discount': CGT_DISCOUNT,

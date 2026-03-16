@@ -805,6 +805,29 @@ function buildAcquisitionPanel(p) {{
     </div>
     <div>
       <div class="section-title" style="margin-top:0">10-Year Exit</div>
+      ${{(()=>{{
+        const inf  = assump.inflation_rate || 0.025;
+        const yrs  = 10;
+        const base = p.purchase_price || 1;
+        const ev   = p.exit_value || 0;
+        const nomAnn  = (Math.pow(ev/base, 1/yrs) - 1) * 100;
+        const nomTot  = (ev/base - 1) * 100;
+        const realAnn = ((Math.pow(ev/base, 1/yrs) / (1+inf)) - 1) * 100;
+        const realTot = ((ev/base) / Math.pow(1+inf, yrs) - 1) * 100;
+        const inflAdj = Math.round(ev / Math.pow(1+inf, yrs));
+        return `<div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+          <div class="card" style="flex:1;min-width:140px;border-top-color:var(--green)">
+            <div class="card-label">Nominal Growth</div>
+            <div class="card-value pos" style="font-size:20px">${{nomAnn.toFixed(1)}}%/yr</div>
+            <div class="card-sub">${{nomTot.toFixed(0)}}% total over 10 yrs</div>
+          </div>
+          <div class="card" style="flex:1;min-width:140px;border-top-color:var(--blue)">
+            <div class="card-label">Real Growth (after ${{(inf*100).toFixed(1)}}% inflation)</div>
+            <div class="card-value" style="font-size:20px;color:var(--blue)">${{realAnn.toFixed(1)}}%/yr</div>
+            <div class="card-sub">${{realTot.toFixed(0)}}% real total · ${{fmt(inflAdj)}} in today's $</div>
+          </div>
+        </div>`;
+      }})()}}
       <div class="tbl-wrap"><table>
         <thead><tr><th>Component</th><th class="c">Amount</th></tr></thead>
         <tbody>
@@ -819,11 +842,33 @@ function buildAcquisitionPanel(p) {{
       ${{hasYearly?`
       <div class="section-title" style="margin-top:16px">If-Sold-Now Scenarios</div>
       <div class="tbl-wrap"><table>
-        <thead><tr><th class="c">Year</th><th class="c">Value</th><th class="c">Equity</th><th class="c">Net Proceeds</th></tr></thead>
+        <thead><tr>
+          <th class="c">Year</th><th class="c">Value</th>
+          <th class="c">Growth %/yr</th><th class="c">Total Growth</th>
+          <th class="c">Real %/yr<br><span style="font-weight:400;font-size:10px">after inflation</span></th>
+          <th class="c">Real Total<br><span style="font-weight:400;font-size:10px">in today's $</span></th>
+          <th class="c">Equity</th><th class="c">Net Proceeds</th>
+        </tr></thead>
         <tbody>
-          ${{p.yearly.filter((_,i)=>[0,2,4,6,9].includes(i)).map(y=>
-            `<tr><td class="c">Yr ${{y.year}}</td><td class="c">${{fmt(y.prop_value)}}</td><td class="c">${{fmt(y.equity)}}</td><td class="c"><strong>${{fmt(y.net_proceeds_if_sold)}}</strong></td></tr>`
-          ).join('')}}
+          ${{p.yearly.filter((_,i)=>[0,2,4,6,9].includes(i)).map(y=>{{
+            const inf2 = assump.inflation_rate || 0.025;
+            const base2 = p.purchase_price || 1;
+            const nomA = (Math.pow(y.prop_value/base2, 1/y.year) - 1) * 100;
+            const nomT = (y.prop_value/base2 - 1) * 100;
+            const realA = ((Math.pow(y.prop_value/base2, 1/y.year) / (1+inf2)) - 1) * 100;
+            const realT = (y.prop_value/base2 / Math.pow(1+inf2, y.year) - 1) * 100;
+            const today = Math.round(y.prop_value / Math.pow(1+inf2, y.year));
+            return `<tr>
+              <td class="c">Yr ${{y.year}}</td>
+              <td class="c">${{fmt(y.prop_value)}}</td>
+              <td class="c" style="color:var(--green)">${{nomA.toFixed(1)}}%</td>
+              <td class="c" style="color:var(--green)">${{nomT.toFixed(0)}}%</td>
+              <td class="c" style="color:var(--blue)">${{realA.toFixed(1)}}%</td>
+              <td class="c" style="color:var(--blue)">${{realT.toFixed(0)}}% (${{fmt(today)}})</td>
+              <td class="c">${{fmt(y.equity)}}</td>
+              <td class="c"><strong>${{fmt(y.net_proceeds_if_sold)}}</strong></td>
+            </tr>`;
+          }}).join('')}}
         </tbody>
       </table></div>`:''}}
     </div>
