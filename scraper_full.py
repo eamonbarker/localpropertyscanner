@@ -33,6 +33,12 @@ DOMAIN_URL = (
     "&excludeunderoffer=1&sort=price-asc"
 )
 
+# ── Scraper-level property filters ───────────────────────────────────────────
+# Properties not meeting these criteria are skipped before running the financial
+# model, saving time and keeping the output focused on quality stock.
+MIN_LAND_SIZE_M2  = 300   # skip properties with known land size below this
+MIN_BEDROOMS      = 4     # skip properties with known bedroom count below this
+
 # ── Financial model constants ─────────────────────────────────────────────────
 DEPOSIT_PCT       = 0.20
 INTEREST_RATE     = 0.062
@@ -800,6 +806,19 @@ async def run():
                         p['bathrooms'] = domain_detail['bathrooms']
                     if p.get('parking') is None and domain_detail.get('parking') is not None:
                         p['parking'] = domain_detail['parking']
+
+                    # ── Scraper-level quality filters ──────────────────────
+                    # Apply AFTER we have real data from the listing page
+                    land = domain_detail.get('land_size_m2') or p.get('land_size_m2') or p.get('land_size_listed') or 0
+                    beds = p.get('bedrooms') or 0
+                    if MIN_LAND_SIZE_M2 > 0 and land and land < MIN_LAND_SIZE_M2:
+                        log(f"  ✗ {p['address']} — land {land}m² < {MIN_LAND_SIZE_M2}m² minimum, skipping")
+                        enriched_results[i] = None
+                        return
+                    if MIN_BEDROOMS > 0 and beds and beds < MIN_BEDROOMS:
+                        log(f"  ✗ {p['address']} — {beds} beds < {MIN_BEDROOMS} minimum, skipping")
+                        enriched_results[i] = None
+                        return
 
                     if domain_detail.get('land_size_m2'):
                         p['land_size_m2'] = domain_detail['land_size_m2']

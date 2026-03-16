@@ -139,6 +139,21 @@ html = f"""<!DOCTYPE html>
 
   @media(max-width:768px) {{ .chart-grid {{ grid-template-columns:1fr; }} .cards {{ grid-template-columns:1fr 1fr; }} .content {{ padding:0 10px; }} }}
 
+  /* ── Filter bar ── */
+  .filter-bar {{ background:white; border-radius:var(--radius); padding:14px 20px; box-shadow:var(--shadow); margin-bottom:18px; display:flex; flex-wrap:wrap; gap:16px; align-items:flex-end; }}
+  .f-item {{ display:flex; flex-direction:column; gap:5px; }}
+  .f-item > label {{ font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.7px; color:#888; }}
+  .f-range-row {{ display:flex; align-items:center; gap:8px; }}
+  .f-range-row input[type=range] {{ accent-color:var(--blue); width:130px; cursor:pointer; }}
+  .f-val {{ font-size:13px; font-weight:700; color:var(--navy); min-width:52px; }}
+  .f-item select {{ padding:6px 10px; border-radius:8px; border:1px solid var(--border); font-size:13px; color:var(--text); background:white; cursor:pointer; }}
+  .suburb-pills {{ display:flex; flex-wrap:wrap; gap:4px; max-width:520px; }}
+  .s-pill {{ background:var(--lgrey); border:1.5px solid var(--border); border-radius:12px; padding:3px 10px; font-size:11px; font-weight:600; cursor:pointer; user-select:none; transition:all .15s; }}
+  .s-pill.on {{ background:var(--blue); color:white; border-color:var(--blue); }}
+  .f-count {{ font-size:12px; color:#888; white-space:nowrap; padding-bottom:2px; }}
+  .f-reset {{ background:none; border:1.5px solid var(--border); border-radius:8px; padding:6px 14px; font-size:12px; font-weight:600; color:#666; cursor:pointer; transition:all .15s; white-space:nowrap; }}
+  .f-reset:hover {{ background:var(--lgrey); color:var(--navy); }}
+
   .sc-control {{ background:white; border-radius:var(--radius); padding:16px 18px; box-shadow:var(--shadow); }}
   .sc-control label {{ display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; color:#888; margin-bottom:6px; }}
   .sc-control .sc-row {{ display:flex; align-items:center; gap:10px; }}
@@ -180,7 +195,8 @@ html = f"""<!DOCTYPE html>
 <!-- ═══════════════════════════════════════ OVERVIEW ═══ -->
 <div id="page-overview" class="page active">
   <div class="cards" id="overviewCards"></div>
-  <div class="section-title">Ranked Shortlist <span class="pill">Sorted by 10-Year IRR · Click property name to deep-dive</span></div>
+  <div id="filterBar" class="filter-bar"></div>
+  <div class="section-title">Ranked Shortlist <span class="pill" id="rankingPill">Sorted by 10-Year IRR · Click property name to deep-dive</span></div>
   <div class="tbl-wrap"><table id="rankingTable"></table></div>
   <div class="chart-grid">
     <div class="chart-box"><h3>10-Year IRR by Property</h3><canvas id="irrChart"></canvas></div>
@@ -293,6 +309,8 @@ const rankOf = addr => ranked.findIndex(p=>p.address===addr)+1;
 
 let compDone = false, riskDone = false;
 let detCharts = {{}};
+let ovCharts = {{}};
+let filterReady = false;
 
 // ─── update header ────────────────────────────────────────────────────────────
 document.getElementById('lastUpdated').textContent =
@@ -312,7 +330,219 @@ function showPage(id, btn) {{
   if(id==='scenario') {{ buildScenarioControls(); if(!scDone) applyScenario(); }}
 }}
 
+// ─── FILTERS ─────────────────────────────────────────────────────────────────
+const fState = {{ minLand:0, minBeds:0, tenancy:'all', minIRR:0, risk:'all', suburbs:new Set() }};
+
+function getFilteredRanked() {{
+  return ranked.filter(p => {{
+    const land = p.land_size_m2 || p.land_size_listed || 0;
+    if (fState.minLand > 0 && land > 0 && land < fState.minLand) return false;
+    if (fState.minBeds > 0 && p.bedrooms > 0 && p.bedrooms < fState.minBeds) return false;
+    if (fState.tenancy === 'tenanted' && p.currently_tenanted !== true) return false;
+    if (fState.tenancy === 'vacant'   && p.currently_tenanted !== false) return false;
+    if (fState.minIRR > 0 && (p.irr||0) < fState.minIRR) return false;
+    if (fState.risk !== 'all' && p.risk_label !== fState.risk) return false;
+    if (fState.suburbs.size > 0 && !fState.suburbs.has(p.suburb)) return false;
+    return true;
+  }});
+}}
+
+function applyFilters() {{
+  const filtered = getFilteredRanked();
+  document.getElementById('filterCount').textContent =
+    filtered.length === ranked.length ? `${{ranked.length}} properties` : `${{filtered.length}} of ${{ranked.length}} shown`;
+  document.getElementById('rankingPill').textContent =
+    filtered.length === ranked.length ? 'Sorted by 10-Year IRR · Click property name to deep-dive'
+    : `${{filtered.length}} filtered · Sorted by 10-Year IRR`;
+  renderRankingTable(filtered);
+  renderOverviewCharts(filtered);
+}}
+
+function _suburbToggle(name, el) {{
+  el.classList.toggle('on');
+  const allPills = document.querySelectorAll('#suburbPills .s-pill');
+  const onPills  = document.querySelectorAll('#suburbPills .s-pill.on');
+  if (onPills.length === allPills.length) {{
+    fState.suburbs = new Set(); // all on = no filter
+  }} else if (onPills.length === 0) {{
+    fState.suburbs = new Set(['__none__']); // none on = show nothing
+  }} else {{
+    fState.suburbs = new Set([...onPills].map(p=>p.dataset.s));
+  }}
+  applyFilters();
+}}
+
+function _allSuburbs() {{
+  const allPills = document.querySelectorAll('#suburbPills .s-pill');
+  const onPills  = document.querySelectorAll('#suburbPills .s-pill.on');
+  const turnOn   = onPills.length < allPills.length;
+  allPills.forEach(p => turnOn ? p.classList.add('on') : p.classList.remove('on'));
+  fState.suburbs = turnOn ? new Set() : new Set(['__none__']);
+  document.getElementById('subAllBtn').textContent = turnOn ? 'Clear all' : 'Select all';
+  applyFilters();
+}}
+
+function resetFilters() {{
+  fState.minLand=0; fState.minBeds=0; fState.tenancy='all';
+  fState.minIRR=0; fState.risk='all'; fState.suburbs=new Set();
+  document.getElementById('fLand').value=0;
+  document.getElementById('fLandVal').textContent='Any';
+  document.getElementById('fBeds').value='0';
+  document.getElementById('fTenancy').value='all';
+  document.getElementById('fIRR').value=0;
+  document.getElementById('fIRRVal').textContent='Any';
+  document.getElementById('fRisk').value='all';
+  document.querySelectorAll('#suburbPills .s-pill').forEach(p=>p.classList.add('on'));
+  document.getElementById('subAllBtn').textContent='Clear all';
+  applyFilters();
+}}
+
+function buildFilterBar() {{
+  const suburbs = [...new Set(ranked.map(p=>p.suburb).filter(Boolean))].sort();
+  const maxLand = Math.max(...ranked.map(p=>p.land_size_m2||p.land_size_listed||0));
+  const landMax = Math.min(Math.ceil(maxLand/100)*100+100, 1500);
+  document.getElementById('filterBar').innerHTML = `
+    <div class="f-item">
+      <label>Min Land Size</label>
+      <div class="f-range-row">
+        <input type="range" id="fLand" min="0" max="${{landMax}}" step="50" value="0"
+          oninput="fState.minLand=+this.value;document.getElementById('fLandVal').textContent=+this.value===0?'Any':this.value+'m²';applyFilters()">
+        <span class="f-val" id="fLandVal">Any</span>
+      </div>
+    </div>
+    <div class="f-item">
+      <label>Min Beds</label>
+      <select id="fBeds" onchange="fState.minBeds=+this.value;applyFilters()">
+        <option value="0">Any</option>
+        <option value="3">3+</option>
+        <option value="4" selected>4+</option>
+        <option value="5">5+</option>
+      </select>
+    </div>
+    <div class="f-item">
+      <label>Tenancy</label>
+      <select id="fTenancy" onchange="fState.tenancy=this.value;applyFilters()">
+        <option value="all">All</option>
+        <option value="tenanted">Tenanted only</option>
+        <option value="vacant">Vacant only</option>
+      </select>
+    </div>
+    <div class="f-item">
+      <label>Min IRR</label>
+      <div class="f-range-row">
+        <input type="range" id="fIRR" min="0" max="20" step="0.5" value="0"
+          oninput="fState.minIRR=+this.value;document.getElementById('fIRRVal').textContent=+this.value===0?'Any':this.value+'%';applyFilters()">
+        <span class="f-val" id="fIRRVal">Any</span>
+      </div>
+    </div>
+    <div class="f-item">
+      <label>Risk</label>
+      <select id="fRisk" onchange="fState.risk=this.value;applyFilters()">
+        <option value="all">Any</option>
+        <option value="Low">Low only</option>
+        <option value="Moderate">≤ Moderate</option>
+      </select>
+    </div>
+    <div class="f-item">
+      <label>Suburbs <button id="subAllBtn" class="f-reset" style="padding:2px 8px;font-size:10px;margin-left:4px" onclick="_allSuburbs()">Clear all</button></label>
+      <div class="suburb-pills" id="suburbPills">
+        ${{suburbs.map(s=>`<span class="s-pill on" data-s="${{s}}" onclick="_suburbToggle('${{s}}',this)">${{s}}</span>`).join('')}}
+      </div>
+    </div>
+    <div class="f-item" style="margin-left:auto;justify-content:flex-end;gap:6px">
+      <span class="f-count" id="filterCount"></span>
+      <button class="f-reset" onclick="resetFilters()">↺ Reset filters</button>
+    </div>
+  `;
+  // Initialise fState.minBeds to 4 to match the default selected option
+  fState.minBeds = 4;
+  applyFilters();
+}}
+
 // ─── OVERVIEW ────────────────────────────────────────────────────────────────
+function renderRankingTable(list) {{
+  const tbl = document.getElementById('rankingTable');
+  if (!list.length) {{
+    tbl.innerHTML = '<thead><tr><th colspan="17">No properties match current filters</th></tr></thead><tbody><tr><td colspan="17" style="text-align:center;padding:30px;color:#999">Try adjusting the filters above</td></tr></tbody>';
+    return;
+  }}
+  tbl.innerHTML = `<thead><tr>
+    <th>Rank</th><th>Address</th><th>Suburb</th><th class="c">Price</th>
+    <th class="c">Beds</th><th class="c">Land m²</th><th class="c">Build Yr</th>
+    <th class="c">PropTrack</th><th class="c">Rent/Wk</th><th class="c">Gross Yld</th>
+    <th class="c">$/Wk (AT)</th><th class="c">IRR</th><th class="c">10yr Equity</th>
+    <th class="c">NPV@7%</th><th class="c">Tenanted</th><th class="c">Risk</th><th class="c">Action</th>
+  </tr></thead><tbody>${{list.map((p,i)=>{{
+    const v = p.yr1_aftertax_cashflow_pw||0;
+    const rowCls = i===0?'hi-row':i===1?'hi-row am':'';
+    const rLabel = p.risk_label||'—';
+    const rCls = rLabel==='Low'?'g':rLabel==='Moderate'?'a':'r';
+    const tenanted = p.currently_tenanted===true?'<span class="chip g">✓ Tenanted</span>':
+                     p.currently_tenanted===false?'<span class="chip gr">Vacant</span>':
+                     '<span class="chip b">Unknown</span>';
+    const ptGap = p.proptrack_gap;
+    const ptStr = ptGap!=null ? fmt(p.proptrack_estimate)+(ptGap>0?` <span style="color:var(--green);font-size:10px">+${{(ptGap/1000).toFixed(0)}}k</span>`:'') : '—';
+    const beds = p.bedrooms != null ? p.bedrooms : '—';
+    const land = p.land_size_m2 != null ? p.land_size_m2+'m²' : (p.land_size_listed != null ? p.land_size_listed+'m²' : '—');
+    const buildYr = p.build_year_est || p.build_year_domain || '—';
+    return `<tr class="${{rowCls}}">
+      <td><span class="chip ${{i===0?'n':i===1?'b':'gr'}}">#${{i+1}}${{i===0?' ★':''}}</span></td>
+      <td><a href="#" onclick="jumpDetail('${{p.address}}');return false"
+         style="color:var(--blue);font-weight:600;text-decoration:none">${{sAddr(p.address)}}</a></td>
+      <td>${{p.suburb||''}}</td>
+      <td class="c">${{fmt(p.purchase_price||p.purchase_price_assumed)}}</td>
+      <td class="c">${{beds}}</td>
+      <td class="c">${{land}}</td>
+      <td class="c">${{buildYr}}</td>
+      <td class="c">${{ptStr}}</td>
+      <td class="c">$${{p.weekly_rent||p.weekly_rent_est||'—'}}/wk</td>
+      <td class="c">${{pct(p.gross_yield||p.gross_yield_pct)}}</td>
+      <td class="c"><span class="chip" style="background:${{cfBg(v)}};color:${{cfColor(v)}}">${{v>=0?'+':''}}$${{v}}/wk</span></td>
+      <td class="c"><strong>${{pct(p.irr||p.irr_10yr_pct)}}</strong></td>
+      <td class="c">${{fmt(p.total_equity_yr10)}}</td>
+      <td class="c">${{fmt(p.npv_7pct||p.npv_at_7pct)}}</td>
+      <td class="c">${{tenanted}}</td>
+      <td class="c"><span class="chip ${{rCls}}">${{rLabel}}</span></td>
+      <td class="c"><a href="#" onclick="jumpDetail('${{p.address}}');return false" style="color:var(--blue);font-size:12px;font-weight:600">Deep-Dive →</a></td>
+    </tr>`;
+  }}).join('')}}</tbody>`;
+}}
+
+function renderOverviewCharts(list) {{
+  Object.values(ovCharts).forEach(c=>{{ try{{c.destroy()}}catch(e){{}} }});
+  ovCharts = {{}};
+  if (!list.length) return;
+  const labs = list.map(p=>sAddr(p.address));
+  ovCharts.irr = new Chart(document.getElementById('irrChart'),{{
+    type:'bar',
+    data:{{labels:labs, datasets:[{{data:list.map(p=>p.irr||p.irr_10yr_pct||0),backgroundColor:COLOURS,borderRadius:5}}]}},
+    options:{{plugins:{{legend:{{display:false}}}},scales:{{y:{{title:{{display:true,text:'IRR %'}}}}}},indexAxis:'y',responsive:true,maintainAspectRatio:true}}
+  }});
+  ovCharts.cf = new Chart(document.getElementById('cfChart'),{{
+    type:'bar',
+    data:{{labels:labs, datasets:[{{data:list.map(p=>p.yr1_aftertax_cashflow_pw||0),
+      backgroundColor:list.map(p=>cfBg(p.yr1_aftertax_cashflow_pw||0)),
+      borderColor:list.map(p=>cfColor(p.yr1_aftertax_cashflow_pw||0)),borderWidth:2,borderRadius:5}}]}},
+    options:{{plugins:{{legend:{{display:false}}}},scales:{{y:{{title:{{display:true,text:'$/week'}}}}}},indexAxis:'y',responsive:true}}
+  }});
+  ovCharts.equity = new Chart(document.getElementById('equityChart'),{{
+    type:'bar',
+    data:{{labels:labs, datasets:[
+      {{label:'Loan Balance',data:list.map(p=>p.loan_amount||0),backgroundColor:'#e0e0e0',borderRadius:3}},
+      {{label:'Equity Yr10',data:list.map(p=>p.total_equity_yr10||0),backgroundColor:COLOURS,borderRadius:3}}
+    ]}},
+    options:{{plugins:{{legend:{{position:'top'}}}},scales:{{x:{{stacked:true}},y:{{stacked:true,title:{{display:true,text:'$'}}}}}},indexAxis:'y',responsive:true}}
+  }});
+  ovCharts.yield = new Chart(document.getElementById('yieldChart'),{{
+    type:'bar',
+    data:{{labels:labs, datasets:[
+      {{label:'Gross Yield',data:list.map(p=>p.gross_yield||p.gross_yield_pct||0),backgroundColor:'#2E75B6cc',borderRadius:3}},
+      {{label:'Net Yield',data:list.map(p=>p.net_yield||p.net_yield_pct||0),backgroundColor:'#1a7a4acc',borderRadius:3}}
+    ]}},
+    options:{{plugins:{{legend:{{position:'top'}}}},scales:{{y:{{title:{{display:true,text:'%'}}}}}},indexAxis:'y',responsive:true}}
+  }});
+}}
+
 function renderOverview() {{
   const top = ranked[0];
   const v = top.yr1_aftertax_cashflow_pw||top.weekly_net_aftertax||0;
@@ -337,83 +567,7 @@ function renderOverview() {{
       <div class="card-value">${{props.filter(p=>p.flood_overlay||p.bushfire_overlay).length}} / ${{props.length}}</div>
       <div class="card-sub">Properties with flood or bushfire overlay</div></div>
   `;
-
-  // Ranking table
-  const tbl = document.getElementById('rankingTable');
-  tbl.innerHTML = `<thead><tr>
-    <th>Rank</th><th>Address</th><th>Suburb</th><th class="c">Price</th>
-    <th class="c">Beds</th><th class="c">Land m²</th><th class="c">Build Yr</th>
-    <th class="c">PropTrack</th><th class="c">Rent/Wk</th><th class="c">Gross Yld</th>
-    <th class="c">$/Wk (AT)</th><th class="c">IRR</th><th class="c">10yr Equity</th>
-    <th class="c">NPV@7%</th><th class="c">Tenanted</th><th class="c">Risk</th><th class="c">Action</th>
-  </tr></thead><tbody>${{ranked.map((p,i)=>{{
-    const v = p.yr1_aftertax_cashflow_pw||0;
-    const rowCls = i===0?'hi-row':i===1?'hi-row am':'';
-    const rLabel = p.risk_label||'—';
-    const rCls = rLabel==='Low'?'g':rLabel==='Moderate'?'a':'r';
-    const tenanted = p.currently_tenanted===true?'<span class="chip g">✓ Tenanted</span>':
-                     p.currently_tenanted===false?'<span class="chip gr">Vacant</span>':
-                     '<span class="chip b">Unknown</span>';
-    const ptGap = p.proptrack_gap;
-    const ptStr = ptGap!=null ? fmt(p.proptrack_estimate)+(ptGap>0?` <span style="color:var(--green);font-size:10px">+${{(ptGap/1000).toFixed(0)}}k</span>`:'') : '—';
-    const beds = p.bedrooms != null ? p.bedrooms : '—';
-    const land = p.land_size_m2 != null ? p.land_size_m2 + 'm²' : (p.land_size_listed != null ? p.land_size_listed + 'm²' : '—');
-    const buildYr = p.build_year_est || p.build_year_domain || '—';
-    return `<tr class="${{rowCls}}">
-      <td><span class="chip ${{i===0?'n':i===1?'b':'gr'}}">#${{i+1}}${{i===0?' ★':''}}</span></td>
-      <td><a href="#" onclick="jumpDetail('${{p.address}}');return false"
-         style="color:var(--blue);font-weight:600;text-decoration:none">${{sAddr(p.address)}}</a></td>
-      <td>${{p.suburb||''}}</td>
-      <td class="c">${{fmt(p.purchase_price||p.purchase_price_assumed)}}</td>
-      <td class="c">${{beds}}</td>
-      <td class="c">${{land}}</td>
-      <td class="c">${{buildYr}}</td>
-      <td class="c">${{ptStr}}</td>
-      <td class="c">$${{p.weekly_rent||p.weekly_rent_est||'—'}}/wk</td>
-      <td class="c">${{pct(p.gross_yield||p.gross_yield_pct)}}</td>
-      <td class="c"><span class="chip" style="background:${{cfBg(v)}};color:${{cfColor(v)}}">${{v>=0?'+':''}}$${{v}}/wk</span></td>
-      <td class="c"><strong>${{pct(p.irr||p.irr_10yr_pct)}}</strong></td>
-      <td class="c">${{fmt(p.total_equity_yr10)}}</td>
-      <td class="c">${{fmt(p.npv_7pct||p.npv_at_7pct)}}</td>
-      <td class="c">${{tenanted}}</td>
-      <td class="c"><span class="chip ${{rCls}}">${{rLabel}}</span></td>
-      <td class="c"><a href="#" onclick="jumpDetail('${{p.address}}');return false" style="color:var(--blue);font-size:12px;font-weight:600">Deep-Dive →</a></td>
-    </tr>`;
-  }}).join('')}}</tbody>`;
-
-  // Charts
-  new Chart(document.getElementById('irrChart'),{{
-    type:'bar',
-    data:{{labels:ranked.map(p=>sAddr(p.address)),
-      datasets:[{{data:ranked.map(p=>p.irr||p.irr_10yr_pct||0),backgroundColor:COLOURS,borderRadius:5}}]}},
-    options:{{plugins:{{legend:{{display:false}}}},scales:{{y:{{title:{{display:true,text:'IRR %'}}}}}},indexAxis:'y',responsive:true,maintainAspectRatio:true}}
-  }});
-  new Chart(document.getElementById('cfChart'),{{
-    type:'bar',
-    data:{{labels:ranked.map(p=>sAddr(p.address)),
-      datasets:[{{data:ranked.map(p=>p.yr1_aftertax_cashflow_pw||0),
-        backgroundColor:ranked.map(p=>cfBg(p.yr1_aftertax_cashflow_pw||0)),
-        borderColor:ranked.map(p=>cfColor(p.yr1_aftertax_cashflow_pw||0)),borderWidth:2,borderRadius:5}}]}},
-    options:{{plugins:{{legend:{{display:false}}}},scales:{{y:{{title:{{display:true,text:'$/week'}}}}}},indexAxis:'y',responsive:true}}
-  }});
-  new Chart(document.getElementById('equityChart'),{{
-    type:'bar',
-    data:{{labels:ranked.map(p=>sAddr(p.address)),
-      datasets:[
-        {{label:'Loan Balance',data:ranked.map(p=>p.loan_amount||0),backgroundColor:'#e0e0e0',borderRadius:3}},
-        {{label:'Equity Yr10',data:ranked.map(p=>p.total_equity_yr10||0),backgroundColor:COLOURS,borderRadius:3}}
-      ]}},
-    options:{{plugins:{{legend:{{position:'top'}}}},scales:{{x:{{stacked:true}},y:{{stacked:true,title:{{display:true,text:'$'}}}}}},indexAxis:'y',responsive:true}}
-  }});
-  new Chart(document.getElementById('yieldChart'),{{
-    type:'bar',
-    data:{{labels:ranked.map(p=>sAddr(p.address)),
-      datasets:[
-        {{label:'Gross Yield',data:ranked.map(p=>p.gross_yield||p.gross_yield_pct||0),backgroundColor:'#2E75B6cc',borderRadius:3}},
-        {{label:'Net Yield', data:ranked.map(p=>p.net_yield||p.net_yield_pct||0),backgroundColor:'#1a7a4acc',borderRadius:3}}
-      ]}},
-    options:{{plugins:{{legend:{{position:'top'}}}},scales:{{y:{{title:{{display:true,text:'%'}}}}}},indexAxis:'y',responsive:true}}
-  }});
+  buildFilterBar(); // builds filter UI, then calls applyFilters() → renderRankingTable + renderOverviewCharts
 }}
 
 // ─── COMPARISON ───────────────────────────────────────────────────────────────
