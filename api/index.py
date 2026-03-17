@@ -537,7 +537,3 @@ def api_assess():
 @app.route('/health')
 def health():
     return jsonify({'ok': True})
-
-
-# Vercel handler
-handler = app
