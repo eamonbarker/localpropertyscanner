@@ -155,8 +155,8 @@ def financial_model(prop):
         'deposit': round(price * DEPOSIT_PCT), 'stamp_duty': round(stamp),
         'legal_costs': LEGAL_COSTS, 'total_upfront': round(upfront),
         'loan_amount': round(loan), 'annual_interest': round(annual_int),
-        'gross_yield': round((weekly_rent * 52) / price * 100, 2),
-        'net_yield': round((weekly_rent * 52 * (1 - VACANCY_RATE)) / price * 100, 2),
+        'gross_yield': round((weekly_rent * 52) / price * 100, 2) if price else None,
+        'net_yield': round((weekly_rent * 52 * (1 - VACANCY_RATE)) / price * 100, 2) if price else None,
         'yr1_gross_rent': yr1['gross_rent'], 'yr1_interest': yr1['interest'],
         'yr1_other_expenses': yr1['pm_fee']+yr1['council_water_insurance']+yr1['maintenance'],
         'yr1_depreciation': yr1['total_depreciation'],
@@ -165,8 +165,8 @@ def financial_model(prop):
         'yr1_pretax_cashflow': yr1['pretax_cashflow'],
         'yr1_aftertax_cashflow': yr1['aftertax_cashflow'],
         'yr1_aftertax_cashflow_pw': yr1['aftertax_cashflow_pw'],
-        'coc_pretax': round(yr1['pretax_cashflow'] / upfront * 100, 2),
-        'coc_aftertax': round(yr1['aftertax_cashflow'] / upfront * 100, 2),
+        'coc_pretax': round(yr1['pretax_cashflow'] / upfront * 100, 2) if upfront else None,
+        'coc_aftertax': round(yr1['aftertax_cashflow'] / upfront * 100, 2) if upfront else None,
         'exit_value': ev10, 'gross_capital_gain': gg10,
         'selling_costs_exit': sc10, 'cgt_payable': cgt10, 'net_proceeds': net10,
         'irr': irr, 'npv_7pct': npv7,
@@ -293,20 +293,38 @@ async def scrape_domain(page):
 
 def parse_price(price_str):
     """Extract a numeric price from display string."""
-    s = str(price_str)
-    # Direct price: $950,000
-    m = re.search(r'\$\s*([\d,]+)', s.replace(' ',''))
+    if not price_str:
+        return None
+    s = str(price_str).strip()
+    if re.search(r'auction|contact\s*agent', s, re.I):
+        return None
+
+    def _val(raw):
+        """Convert a matched number string to int, handling 'k' suffix."""
+        raw = raw.replace(',', '').strip()
+        if raw.lower().endswith('k'):
+            return int(float(raw[:-1]) * 1000)
+        v = int(raw)
+        # Bare numbers like "850" from "$850k" after stripping 'k' are handled above;
+        # bare 6-digit+ numbers are fine; reject suspiciously small bare numbers
+        return v if v >= 10000 else v * 1000
+
+    # "Offers Over $850,000" — check before range/single so we don't misparse
+    m = re.search(r'over\s*\$\s*([\d,]+k?)', s, re.I)
     if m:
-        return int(m.group(1).replace(',',''))
-    # "Offers Over $850,000"
-    m = re.search(r'over\s*\$\s*([\d,]+)', s, re.I)
-    if m:
-        return int(m.group(1).replace(',','')) + 15000
-    # Range: take midpoint
-    m = re.findall(r'\$\s*([\d,]+)', s)
+        return _val(m.group(1)) + 15000
+
+    # Range: $850,000 - $900,000 or $850k - $900k — take midpoint
+    m = re.findall(r'\$\s*([\d,]+k?)', s, re.I)
     if len(m) >= 2:
-        a, b = int(m[0].replace(',','')), int(m[1].replace(',',''))
+        a, b = _val(m[0]), _val(m[1])
         return (a + b) // 2
+
+    # Single price: $950,000 or $850k
+    m = re.search(r'\$\s*([\d,]+k?)', s, re.I)
+    if m:
+        return _val(m.group(1))
+
     return None
 
 def is_tenanted(description, timeline_text):
