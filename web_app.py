@@ -134,6 +134,23 @@ HTML = """<!DOCTYPE html>
   .domain-link:hover { text-decoration:underline; }
   .error-box { background:#fdedec; border-radius:10px; padding:18px 20px;
                color:var(--red); font-size:14px; margin-top:16px; display:none; }
+  /* override form */
+  .override-toggle { margin-top:24px; background:none; border:1.5px solid var(--border);
+                     border-radius:8px; padding:9px 16px; font-size:13px; font-weight:600;
+                     color:#666; cursor:pointer; width:100%; text-align:left; }
+  .override-toggle:hover { border-color:var(--blue); color:var(--blue); }
+  .override-form { display:none; margin-top:14px; padding:20px; background:var(--lgrey);
+                   border-radius:10px; }
+  .override-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr));
+                   gap:14px; margin-bottom:16px; }
+  .field-group label { display:block; font-size:11px; font-weight:700; color:#888;
+                       text-transform:uppercase; letter-spacing:.6px; margin-bottom:5px; }
+  .field-group input, .field-group select {
+    width:100%; padding:9px 12px; border:1.5px solid var(--border); border-radius:7px;
+    font-size:14px; background:white; }
+  .field-group input:focus, .field-group select:focus {
+    outline:none; border-color:var(--blue); }
+  .save-note { font-size:12px; color:#888; margin-top:10px; }
   @media(max-width:600px) {
     .content { padding:0 12px; }
     .card { padding:20px 16px; }
@@ -208,18 +225,68 @@ HTML = """<!DOCTYPE html>
         <tbody id="rTableBody"></tbody>
       </table>
     </div>
+
+    <!-- Manual override / recalculate -->
+    <button class="override-toggle" id="overrideToggle">✎ Override values &amp; recalculate</button>
+    <div class="override-form" id="overrideForm">
+      <div class="override-grid">
+        <div class="field-group">
+          <label>Purchase Price ($)</label>
+          <input type="number" id="ovPrice" placeholder="e.g. 920000" step="1000">
+        </div>
+        <div class="field-group">
+          <label>Weekly Rent ($)</label>
+          <input type="number" id="ovRent" placeholder="e.g. 650" step="10">
+        </div>
+        <div class="field-group">
+          <label>PropTrack Estimate ($)</label>
+          <input type="number" id="ovEstimate" placeholder="e.g. 940000" step="1000">
+        </div>
+        <div class="field-group">
+          <label>Build Year</label>
+          <input type="number" id="ovBuildYear" placeholder="e.g. 2018" min="1900" max="2030">
+        </div>
+        <div class="field-group">
+          <label>Flood Overlay</label>
+          <select id="ovFlood">
+            <option value="">Unknown</option>
+            <option value="false">No</option>
+            <option value="true">Yes</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label>Bushfire Overlay</label>
+          <select id="ovBushfire">
+            <option value="">Unknown</option>
+            <option value="false">No</option>
+            <option value="true">Yes</option>
+          </select>
+        </div>
+      </div>
+      <button class="btn" id="recalcBtn">Recalculate →</button>
+      <div class="save-note">Saves to the dashboard and rebuilds the full analysis.</div>
+      <div class="error-box" id="overrideError" style="margin-top:10px"></div>
+    </div>
   </div>
 
 </div>
 
 <script>
 let pollTimer = null;
+let currentPropertyId = null;
 
 document.addEventListener('DOMContentLoaded', function() {
   document.getElementById('assessBtn').addEventListener('click', assess);
   document.getElementById('urlInput').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') assess();
   });
+  document.getElementById('overrideToggle').addEventListener('click', function() {
+    const form = document.getElementById('overrideForm');
+    const open = form.style.display === 'block';
+    form.style.display = open ? 'none' : 'block';
+    this.textContent = open ? '✎ Override values & recalculate' : '✕ Close overrides';
+  });
+  document.getElementById('recalcBtn').addEventListener('click', recalculate);
 });
 
 function fmt(n) {
@@ -409,7 +476,66 @@ function showResult(p) {
       <td class="c">${fmt(y.equity)}</td>
     </tr>`).join('');
 
+  // Pre-populate override fields with scraped values
+  currentPropertyId = p.id || null;
+  if (p.purchase_price)      document.getElementById('ovPrice').value     = p.purchase_price;
+  if (p.weekly_rent)         document.getElementById('ovRent').value      = p.weekly_rent;
+  if (p.proptrack_estimate)  document.getElementById('ovEstimate').value  = p.proptrack_estimate;
+  if (p.build_year_est)      document.getElementById('ovBuildYear').value = p.build_year_est;
+  const floodEl = document.getElementById('ovFlood');
+  if (p.flood_overlay === true)  floodEl.value = 'true';
+  else if (p.flood_overlay === false) floodEl.value = 'false';
+  else floodEl.value = '';
+  const bushEl = document.getElementById('ovBushfire');
+  if (p.bushfire_overlay === true)  bushEl.value = 'true';
+  else if (p.bushfire_overlay === false) bushEl.value = 'false';
+  else bushEl.value = '';
+  // Reset override form state
+  document.getElementById('overrideForm').style.display = 'none';
+  document.getElementById('overrideToggle').textContent = '✎ Override values & recalculate';
+  document.getElementById('overrideError').style.display = 'none';
+
   document.getElementById('result').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+async function recalculate() {
+  if (!currentPropertyId) { return; }
+  const btn = document.getElementById('recalcBtn');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  document.getElementById('overrideError').style.display = 'none';
+
+  const body = { property_id: currentPropertyId };
+  const price     = document.getElementById('ovPrice').value;
+  const rent      = document.getElementById('ovRent').value;
+  const estimate  = document.getElementById('ovEstimate').value;
+  const buildYear = document.getElementById('ovBuildYear').value;
+  const flood     = document.getElementById('ovFlood').value;
+  const bushfire  = document.getElementById('ovBushfire').value;
+  if (price)     body.purchase_price      = parseInt(price);
+  if (rent)      body.weekly_rent         = parseInt(rent);
+  if (estimate)  body.proptrack_estimate  = parseInt(estimate);
+  if (buildYear) body.build_year_est      = parseInt(buildYear);
+  if (flood !== '')    body.flood_overlay    = flood === 'true';
+  if (bushfire !== '') body.bushfire_overlay = bushfire === 'true';
+
+  try {
+    const r = await fetch('/update', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    showResult(d.result);
+  } catch(e) {
+    const errEl = document.getElementById('overrideError');
+    errEl.style.display = 'block';
+    errEl.textContent = '✗ ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Recalculate →';
+  }
 }
 </script>
 </body>
@@ -478,6 +604,72 @@ def result(job_id):
     if not job:
         return jsonify({'error': 'Job not found'}), 404
     return jsonify(job)
+
+
+@app.route('/update', methods=['POST'])
+def update():
+    """Apply manual overrides to a property, re-run the financial model, save and rebuild."""
+    import math
+    body = request.get_json(silent=True) or {}
+    prop_id = body.get('property_id', '').strip()
+    if not prop_id:
+        return jsonify({'error': 'property_id is required'}), 400
+
+    data_path = scraper_full.DATA_PATH
+    if not data_path.exists():
+        return jsonify({'error': 'No property data found'}), 404
+
+    try:
+        data = json.loads(data_path.read_text())
+    except Exception as e:
+        return jsonify({'error': f'Could not read data: {e}'}), 500
+
+    props = data.get('properties', [])
+    prop = next((p for p in props if p.get('id') == prop_id), None)
+    if not prop:
+        return jsonify({'error': f'Property {prop_id!r} not found'}), 404
+
+    # Apply overrides
+    overridable = ['purchase_price', 'weekly_rent', 'proptrack_estimate',
+                   'build_year_est', 'flood_overlay', 'bushfire_overlay']
+    for field in overridable:
+        if field in body:
+            prop[field] = body[field]
+
+    # If purchase_price was overridden, sync the assumed price too
+    if 'purchase_price' in body:
+        prop['purchase_price_assumed'] = prop['purchase_price']
+        prop['rent_source'] = prop.get('rent_source', 'estimate')
+        if prop.get('rent_source') == 'estimate':
+            prop['weekly_rent'] = body.get('weekly_rent') or round(prop['purchase_price'] * 0.00081)
+
+    # Re-run financial model
+    model = scraper_full.financial_model(prop)
+    prop.update(model)
+    risk = (2 if prop.get('flood_overlay') else 0) + (1 if prop.get('bushfire_overlay') else 0)
+    prop['risk_score'] = risk
+    prop['risk_label'] = {0:'Low',1:'Moderate',2:'High',3:'Very High'}.get(risk,'Unknown')
+    if prop.get('proptrack_estimate'):
+        prop['proptrack_gap'] = prop['proptrack_estimate'] - prop['purchase_price']
+
+    # Save back
+    data['properties'] = [prop if p.get('id') == prop_id else p for p in props]
+    data_path.write_text(json.dumps(data, indent=2, default=str))
+
+    # Rebuild HTML
+    import subprocess as _sp
+    _sp.run([sys.executable, str(scraper_full.BASE_DIR / 'build_site_v2.py')],
+            capture_output=True, timeout=60)
+
+    # Sanitize NaN before returning
+    def sanitize(obj):
+        if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+            return None
+        if isinstance(obj, dict): return {k: sanitize(v) for k, v in obj.items()}
+        if isinstance(obj, list): return [sanitize(v) for v in obj]
+        return obj
+
+    return jsonify({'result': sanitize(prop)})
 
 
 @app.route('/health')

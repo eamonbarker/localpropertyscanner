@@ -599,27 +599,69 @@ async def scrape_property_com(page, address, suburb, postcode):
                 except:
                     await page.wait_for_timeout(4000)
 
-        # ── Extract full page text ─────────────────────────────────────────────
+        # ── Try __NEXT_DATA__ first (property.com.au is also Next.js) ────────
+        next_data = await page.evaluate("""() => {
+            try {
+                const nd = document.getElementById('__NEXT_DATA__');
+                if (!nd) return null;
+                return JSON.parse(nd.textContent);
+            } catch(e) { return null; }
+        }""")
+        if next_data:
+            try:
+                pp = next_data.get('props', {}).get('pageProps', {})
+                prop_nd = (pp.get('property') or pp.get('listing')
+                           or pp.get('propertyData') or pp.get('propertyDetails') or {})
+                log(f"  [debug propcom __NEXT_DATA__] pageProps keys: {list(pp.keys())[:20]}")
+                log(f"  [debug propcom __NEXT_DATA__] prop keys: {list(prop_nd.keys())[:20]}")
+                # Valuation / PropTrack estimate
+                for vkey in ['valuation', 'estimate', 'propertyEstimate', 'proptrackEstimate']:
+                    v = prop_nd.get(vkey) or {}
+                    if isinstance(v, dict):
+                        est = v.get('mid') or v.get('estimate') or v.get('value') or v.get('lowerRange')
+                        if est and 200000 < int(est) < 10000000:
+                            result['proptrack_estimate'] = int(est)
+                            break
+                    elif isinstance(v, (int, float)) and 200000 < v < 10000000:
+                        result['proptrack_estimate'] = int(v)
+                        break
+                # Rental estimate
+                for rkey in ['rentalValuation', 'rentalEstimate', 'rentalValue']:
+                    rv = prop_nd.get(rkey) or {}
+                    if isinstance(rv, dict):
+                        pw = rv.get('mid') or rv.get('estimate') or rv.get('value')
+                        if pw and 100 < int(pw) < 5000:
+                            result['rental_estimate_pw'] = int(pw)
+                            break
+            except Exception as nd_err:
+                log(f"  [debug propcom __NEXT_DATA__] parse error: {nd_err}")
+
+        # ── Extract full page text (wait extra for JS rendering) ─────────────
+        await page.wait_for_timeout(3000)
         text = await page.evaluate("() => document.body.innerText")
         full = text  # keep full text for regex searches across line breaks
         lines = [l.strip() for l in text.split('\n') if l.strip()]
         full_lower = full.lower()
         log(f"  [debug propcom] url={result.get('property_com_url')}  text_len={len(text)}")
-        log(f"  [debug propcom] first 500 chars: {text[:500].replace(chr(10), ' | ')}")
+        log(f"  [debug propcom] first 800 chars: {text[:800].replace(chr(10), ' | ')}")
 
         # ── Overlays — parse the "About the property" summary sentence ────────
-        # property.com.au uses natural language in a single paragraph, e.g.:
-        #   "no flood or heritage overlays detected. We have detected a bushfire overlay."
-        # Flood
-        if re.search(r'no flood\b[^.]*overlay|flood overlay[^.]*not detected|no flood overlay', full_lower):
-            result['flood_overlay'] = False
-        elif re.search(r'detected[^.]*flood overlay|flood overlay[^.]*detected|flood overlay on this', full_lower):
-            result['flood_overlay'] = True
+        # Flood (only override if not already set from __NEXT_DATA__)
+        if result['flood_overlay'] is None:
+            if re.search(r'no flood\b[^.]*overlay|flood overlay[^.]*not detected|no flood overlay'
+                         r'|not affected by flood|no flooding', full_lower):
+                result['flood_overlay'] = False
+            elif re.search(r'detected[^.]*flood overlay|flood overlay[^.]*detected'
+                           r'|flood overlay on this|affected by flood|flood risk', full_lower):
+                result['flood_overlay'] = True
         # Bushfire
-        if re.search(r'no bushfire[^.]*overlay|bushfire overlay[^.]*not detected|no bushfire overlay', full_lower):
-            result['bushfire_overlay'] = False
-        elif re.search(r'detected[^.]*bushfire overlay|bushfire overlay[^.]*detected|bushfire overlay on this', full_lower):
-            result['bushfire_overlay'] = True
+        if result['bushfire_overlay'] is None:
+            if re.search(r'no bushfire[^.]*overlay|bushfire overlay[^.]*not detected|no bushfire overlay'
+                         r'|not affected by bushfire', full_lower):
+                result['bushfire_overlay'] = False
+            elif re.search(r'detected[^.]*bushfire overlay|bushfire overlay[^.]*detected'
+                           r'|bushfire overlay on this|bushfire risk', full_lower):
+                result['bushfire_overlay'] = True
         # Heritage
         if re.search(r'no heritage[^.]*overlay|heritage overlay[^.]*not detected|no heritage overlay', full_lower):
             result['heritage_overlay'] = False
