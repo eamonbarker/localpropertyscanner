@@ -299,7 +299,7 @@ function parseSteps(log) {
 
 function formatLog(raw) {
   // Strip lines containing STEP:N: markers from the visible log
-  return raw.split('\n').filter(l => !l.match(/STEP:\d+:/)).join('\n').trim();
+  return raw.split('\\n').filter(l => !l.match(/STEP:\\d+:/)).join('\\n').trim();
 }
 
 function pollResult(jobId) {
