@@ -450,7 +450,17 @@ def assess():
         scraper_full.log_sink = capture_log
         try:
             result = asyncio.run(scraper_full.run_single(url, persist=PERSIST))
-            jobs[job_id].update({'status': 'done', 'result': result,
+            # Sanitize result: replace NaN/Infinity with None so JSON serialises cleanly
+            import math
+            def sanitize(obj):
+                if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+                    return None
+                if isinstance(obj, dict):
+                    return {k: sanitize(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [sanitize(v) for v in obj]
+                return obj
+            jobs[job_id].update({'status': 'done', 'result': sanitize(result),
                                   'log': '\n'.join(log_lines)})
         except Exception as e:
             jobs[job_id].update({'status': 'error', 'error': str(e),

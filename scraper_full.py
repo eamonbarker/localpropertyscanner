@@ -410,9 +410,12 @@ async def scrape_domain_listing(page, url):
             let priceDisplay = typeof pd === 'string' ? pd
                 : (pd.displayPrice || pd.price || pd.display || pd.label || '');
             // Fallback: check alternate top-level paths
+            // summary.method holds the price string in newer Domain layouts
             if (!priceDisplay) {
                 const pp = d.props?.pageProps;
-                priceDisplay = pp?.listing?.priceDetails?.displayPrice
+                priceDisplay = summary.method
+                    || summary.title
+                    || pp?.listing?.priceDetails?.displayPrice
                     || pp?.listing?.price
                     || pp?.price
                     || cp.displayPrice
