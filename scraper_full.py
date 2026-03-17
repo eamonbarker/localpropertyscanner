@@ -793,6 +793,7 @@ async def run_single(url: str, persist: bool = True) -> dict:
         tab = await context.new_page()
         try:
             # ── 1. Domain listing page ─────────────────────────────────
+            log("STEP:1:Loading Domain.com.au listing page…")
             domain_detail = await scrape_domain_listing(tab, url)
 
             address = domain_detail.get('address_full') or ''
@@ -867,6 +868,7 @@ async def run_single(url: str, persist: bool = True) -> dict:
             log(f"  Beds    : {p.get('bedrooms')}  Land: {p.get('land_size_m2')}m²")
 
             # ── 2. property.com.au ─────────────────────────────────────
+            log("STEP:2:Checking property.com.au for overlays and rental data…")
             risk_data = await scrape_property_com(tab, address, suburb, postcode)
             p.update({k: v for k, v in risk_data.items()
                       if k not in ('currently_tenanted', 'land_size_m2') or p.get(k) is None})
@@ -882,6 +884,7 @@ async def run_single(url: str, persist: bool = True) -> dict:
                 p['rent_source'] = 'propcom_estimate'
 
             # ── 3. Financial model ─────────────────────────────────────
+            log("STEP:3:Running 10-year financial model…")
             model = financial_model(p)
             p.update(model)
 
@@ -895,6 +898,7 @@ async def run_single(url: str, persist: bool = True) -> dict:
             log(f"  Risk    : {p.get('risk_label')}  PropTrack: ${p.get('proptrack_estimate'):,}")
 
             if persist:
+                log("STEP:4:Saving result and rebuilding dashboard…")
                 # ── 4. Upsert into JSON ────────────────────────────────────
                 data = {'meta': {}, 'assumptions': {}, 'properties': []}
                 if DATA_PATH.exists():
@@ -921,7 +925,8 @@ async def run_single(url: str, persist: bool = True) -> dict:
                         capture_output=True, timeout=60)
                 log(f"✓ Dashboard rebuilt")
             else:
-                log(f"\n✓ Assessment complete (persist=False — not saved)")
+                log("STEP:4:Assessment complete")
+                log(f"✓ Assessment complete (results not saved in web mode)")
 
             return p
 

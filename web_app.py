@@ -77,13 +77,24 @@ HTML = """<!DOCTYPE html>
   .btn.danger { background:var(--red); }
   /* progress */
   .progress { margin-top:18px; display:none; }
-  .spinner { display:inline-block; width:16px; height:16px; border:2px solid #ccc;
-             border-top-color:var(--blue); border-radius:50%;
-             animation:spin .7s linear infinite; vertical-align:middle; margin-right:8px; }
+  .steps { display:flex; flex-direction:column; gap:6px; margin-top:14px; }
+  .step { display:flex; align-items:center; gap:10px; font-size:13px; color:#999;
+          transition:color .3s; }
+  .step.active { color:var(--navy); font-weight:600; }
+  .step.done   { color:var(--green); }
+  .step-icon { width:22px; height:22px; border-radius:50%; display:flex;
+               align-items:center; justify-content:center; flex-shrink:0;
+               font-size:12px; background:#e2e6ea; color:#999; }
+  .step.active .step-icon { background:var(--blue); color:white; }
+  .step.done   .step-icon { background:var(--green); color:white; }
+  .spinner { display:inline-block; width:14px; height:14px; border:2px solid rgba(255,255,255,.4);
+             border-top-color:white; border-radius:50%;
+             animation:spin .7s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
-  .log-box { background:var(--lgrey); border-radius:8px; padding:14px 16px;
-             font-family:monospace; font-size:12px; white-space:pre-wrap;
-             max-height:160px; overflow-y:auto; margin-top:12px; color:#444; }
+  .log-box { background:var(--lgrey); border-radius:8px; padding:12px 14px;
+             font-family:monospace; font-size:11px; white-space:pre-wrap; line-height:1.6;
+             max-height:180px; overflow-y:auto; margin-top:14px; color:#555;
+             border:1px solid var(--border); }
   /* result */
   #result { display:none; }
   .result-header { display:flex; justify-content:space-between; align-items:flex-start;
@@ -151,8 +162,16 @@ HTML = """<!DOCTYPE html>
       <button class="btn" id="assessBtn" onclick="assess()">Assess →</button>
     </div>
     <div class="progress" id="progress">
-      <span class="spinner"></span>
-      <span id="progressMsg">Scraping Domain.com.au and property.com.au — usually takes 30–60 seconds…</span>
+      <div style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:var(--navy)">
+        <div class="spinner" style="border-color:rgba(13,33,55,.2);border-top-color:var(--navy);width:16px;height:16px;border-width:2px"></div>
+        <span id="progressMsg">Starting assessment…</span>
+      </div>
+      <div class="steps" id="stepList">
+        <div class="step" id="step1"><div class="step-icon">1</div><span>Load Domain.com.au listing page</span></div>
+        <div class="step" id="step2"><div class="step-icon">2</div><span>Check property.com.au overlays &amp; rental data</span></div>
+        <div class="step" id="step3"><div class="step-icon">3</div><span>Run 10-year financial model</span></div>
+        <div class="step" id="step4"><div class="step-icon">4</div><span>Save result &amp; rebuild dashboard</span></div>
+      </div>
       <div class="log-box" id="logBox"></div>
     </div>
     <div class="error-box" id="errorBox"></div>
@@ -215,6 +234,8 @@ async function assess() {
   document.getElementById('result').style.display = 'none';
   document.getElementById('errorBox').style.display = 'none';
   document.getElementById('logBox').textContent = '';
+  // Reset all steps to pending
+  [1,2,3,4].forEach(n => setStep(n, 'pending'));
 
   let resp, data;
   try {
@@ -233,22 +254,67 @@ async function assess() {
   pollResult(data.job_id);
 }
 
+// step states: 'pending' | 'active' | 'done'
+const stepLabels = {
+  1: 'Loading Domain.com.au listing page…',
+  2: 'Checking property.com.au overlays & rental data…',
+  3: 'Running 10-year financial model…',
+  4: 'Saving result & rebuilding dashboard…',
+};
+function setStep(n, state) {
+  const el = document.getElementById('step' + n);
+  if (!el) return;
+  el.className = 'step' + (state === 'active' ? ' active' : state === 'done' ? ' done' : '');
+  const icon = el.querySelector('.step-icon');
+  if (state === 'active')      icon.innerHTML = '<div class="spinner"></div>';
+  else if (state === 'done')   icon.textContent = '✓';
+  else                         icon.textContent = n;
+}
+
+function parseSteps(log) {
+  // Find the highest STEP:N: marker seen — log() prepends a timestamp so match anywhere in line
+  const matches = [...log.matchAll(/STEP:(\d+):/g)];
+  if (!matches.length) return;
+  const steps = matches.map(m => parseInt(m[1]));
+  const current = steps[steps.length - 1];
+  for (let i = 1; i <= 4; i++) {
+    if (i < current)        setStep(i, 'done');
+    else if (i === current) setStep(i, 'active');
+    else                    setStep(i, 'pending');
+  }
+  if (stepLabels[current]) {
+    document.getElementById('progressMsg').textContent = stepLabels[current];
+  }
+}
+
+function formatLog(raw) {
+  // Strip lines containing STEP:N: markers from the visible log
+  return raw.split('\n').filter(l => !l.match(/STEP:\d+:/)).join('\n').trim();
+}
+
 function pollResult(jobId) {
   clearTimeout(pollTimer);
   pollTimer = setInterval(async () => {
     try {
       const r = await fetch('/result/' + jobId);
       const d = await r.json();
-      if (d.log) document.getElementById('logBox').textContent = d.log;
+      if (d.log) {
+        parseSteps(d.log);
+        const box = document.getElementById('logBox');
+        box.textContent = formatLog(d.log);
+        box.scrollTop = box.scrollHeight;
+      }
       if (d.status === 'done') {
         clearInterval(pollTimer);
+        [1,2,3,4].forEach(n => setStep(n, 'done'));
+        document.getElementById('progressMsg').textContent = 'Assessment complete!';
         showResult(d.result);
       } else if (d.status === 'error') {
         clearInterval(pollTimer);
         showError(d.error || 'Assessment failed');
       }
     } catch(e) { /* keep polling */ }
-  }, 3000);
+  }, 1000);
 }
 
 function showError(msg) {
