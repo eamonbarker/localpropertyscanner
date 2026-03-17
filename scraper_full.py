@@ -730,9 +730,10 @@ def parse_domain_listing(raw):
         'listing_id': raw.get('listing_id',''),
     }
 
-async def run_single(url: str) -> dict:
+async def run_single(url: str, persist: bool = True) -> dict:
     """Scrape and assess a single Domain.com.au listing URL.
-    Upserts the result into property_data.json and rebuilds the HTML.
+    If persist=True, upserts the result into property_data.json and rebuilds the HTML.
+    If persist=False, returns the enriched property dict without writing anything.
     Returns the enriched property dict, or raises on failure.
     """
     from playwright.async_api import async_playwright
@@ -856,31 +857,34 @@ async def run_single(url: str) -> dict:
             log(f"  IRR     : {p.get('irr')}%   AT: ${p.get('yr1_aftertax_cashflow_pw')}/wk")
             log(f"  Risk    : {p.get('risk_label')}  PropTrack: ${p.get('proptrack_estimate'):,}")
 
-            # ── 4. Upsert into JSON ────────────────────────────────────
-            data = {'meta': {}, 'assumptions': {}, 'properties': []}
-            if DATA_PATH.exists():
-                try:
-                    data = json.loads(DATA_PATH.read_text())
-                except Exception:
-                    pass
+            if persist:
+                # ── 4. Upsert into JSON ────────────────────────────────────
+                data = {'meta': {}, 'assumptions': {}, 'properties': []}
+                if DATA_PATH.exists():
+                    try:
+                        data = json.loads(DATA_PATH.read_text())
+                    except Exception:
+                        pass
 
-            prop_id = p['id']
-            existing = [x for x in data.get('properties', []) if x.get('id') != prop_id
-                        and re.sub(r'[^a-z0-9]', '', (x.get('domain_url') or '').lower()) !=
-                            re.sub(r'[^a-z0-9]', '', url.lower())]
-            data['properties'] = existing + [p]
-            data['meta']['generated'] = datetime.now().isoformat()
-            data['meta']['generated_display'] = datetime.now().strftime('%d %b %Y %H:%M AEST')
-            data['meta']['total_found'] = len(data['properties'])
+                prop_id = p['id']
+                existing = [x for x in data.get('properties', []) if x.get('id') != prop_id
+                            and re.sub(r'[^a-z0-9]', '', (x.get('domain_url') or '').lower()) !=
+                                re.sub(r'[^a-z0-9]', '', url.lower())]
+                data['properties'] = existing + [p]
+                data['meta']['generated'] = datetime.now().isoformat()
+                data['meta']['generated_display'] = datetime.now().strftime('%d %b %Y %H:%M AEST')
+                data['meta']['total_found'] = len(data['properties'])
 
-            DATA_PATH.write_text(json.dumps(data, indent=2, default=str))
-            log(f"\n✓ Upserted into {DATA_PATH} ({len(data['properties'])} total properties)")
+                DATA_PATH.write_text(json.dumps(data, indent=2, default=str))
+                log(f"\n✓ Upserted into {DATA_PATH} ({len(data['properties'])} total properties)")
 
-            # ── 5. Rebuild HTML ────────────────────────────────────────
-            import subprocess as _sp
-            _sp.run([sys.executable, str(BASE_DIR / 'build_site_v2.py')],
-                    capture_output=True, timeout=60)
-            log(f"✓ Dashboard rebuilt")
+                # ── 5. Rebuild HTML ────────────────────────────────────────
+                import subprocess as _sp
+                _sp.run([sys.executable, str(BASE_DIR / 'build_site_v2.py')],
+                        capture_output=True, timeout=60)
+                log(f"✓ Dashboard rebuilt")
+            else:
+                log(f"\n✓ Assessment complete (persist=False — not saved)")
 
             return p
 
