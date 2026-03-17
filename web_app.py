@@ -226,6 +226,7 @@ function pct(n) {
 }
 
 async function assess() {
+  try {
   const url = document.getElementById('urlInput').value.trim();
   if (!url) { alert('Please paste a Domain.com.au URL'); return; }
 
@@ -252,6 +253,9 @@ async function assess() {
 
   if (!data.job_id) { showError(data.error || 'Unknown error'); return; }
   pollResult(data.job_id);
+  } catch(e) {
+    showError('Unexpected error: ' + e.message);
+  }
 }
 
 // step states: 'pending' | 'active' | 'done'
@@ -385,17 +389,17 @@ function showResult(p) {
   ).join('');
 
   // Year-by-year table
-  const yrs = p.yearly_data || [];
+  const yrs = p.yearly || p.yearly_data || [];
   document.getElementById('rTableBody').innerHTML = yrs.map(y => `
     <tr>
       <td>${y.year}</td>
-      <td class="c">$${Math.round(y.weekly_rent || 0)}</td>
-      <td class="c">${fmt(y.gross_income)}</td>
-      <td class="c">${fmt(y.total_expenses)}</td>
+      <td class="c">$${Math.round((y.gross_rent || 0) / 52)}</td>
+      <td class="c">${fmt(y.gross_rent)}</td>
+      <td class="c">${fmt(y.total_cash_expenses)}</td>
       <td class="c">${fmt(y.interest)}</td>
-      <td class="c">${fmt(y.net_cashflow)}</td>
-      <td class="c">${(y.aftertax_pw >= 0 ? '+$' : '-$') + Math.abs(Math.round(y.aftertax_pw || 0))}/wk</td>
-      <td class="c">${fmt(y.property_value)}</td>
+      <td class="c">${fmt(y.pretax_cashflow)}</td>
+      <td class="c">${(y.aftertax_cashflow_pw >= 0 ? '+$' : '-$') + Math.abs(Math.round(y.aftertax_cashflow_pw || 0))}/wk</td>
+      <td class="c">${fmt(y.prop_value)}</td>
       <td class="c">${fmt(y.equity)}</td>
     </tr>`).join('');
 
