@@ -23,9 +23,13 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template_string, request
 
-# ── Configure data dir for web mode (no local filesystem needed) ──────────────
+# ── Configure data dir ────────────────────────────────────────────────────────
 os.environ.setdefault('PROPERTY_DATA_DIR', '/tmp/propdata')
 Path(os.environ['PROPERTY_DATA_DIR']).mkdir(parents=True, exist_ok=True)
+
+# PERSIST_ASSESSMENTS=true  → ad-hoc assessments save to JSON + rebuild dashboard (NAS/Docker)
+# PERSIST_ASSESSMENTS=false → stateless, results returned only (Railway/Vercel)
+PERSIST = os.environ.get('PERSIST_ASSESSMENTS', 'false').lower() == 'true'
 
 # Import the scraper (BASE_DIR now reads from env var set above)
 sys.path.insert(0, str(Path(__file__).parent))
@@ -369,7 +373,7 @@ def assess():
 
         scraper_full.log_sink = capture_log
         try:
-            result = asyncio.run(scraper_full.run_single(url, persist=False))
+            result = asyncio.run(scraper_full.run_single(url, persist=PERSIST))
             jobs[job_id].update({'status': 'done', 'result': result,
                                   'log': '\n'.join(log_lines)})
         except Exception as e:
