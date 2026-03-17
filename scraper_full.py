@@ -16,7 +16,8 @@ from pathlib import Path
 import numpy_financial as npf
 
 # ── Output paths ──────────────────────────────────────────────────────────────
-BASE_DIR    = Path('/sessions/stoic-elegant-wright/mnt/Investment Properties')
+_default_dir = Path(__file__).parent  # same directory as the script
+BASE_DIR    = Path(os.environ.get('PROPERTY_DATA_DIR', str(_default_dir)))
 DATA_PATH   = BASE_DIR / 'property_data.json'
 SITE_PATH   = BASE_DIR / 'property_analysis.html'
 LOG_PATH    = BASE_DIR / 'scraper_log.txt'
