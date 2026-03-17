@@ -386,9 +386,21 @@ async def scrape_domain_listing(page, url):
             const addrState = typeof addrObj === 'object' ? (addrObj.state || 'QLD') : 'QLD';
 
             // Price (for single-URL mode where there is no search results page)
-            const pd = summary.priceDetails || summary.price || cp.priceDetails || {};
-            const priceDisplay = typeof pd === 'string' ? pd : (pd.displayPrice || pd.price || '');
-            const isAuction = /auction/i.test(priceDisplay);
+            // Try multiple paths — Domain has changed structure over time
+            const pd = summary.priceDetails || summary.price || cp.priceDetails || cp.price || {};
+            let priceDisplay = typeof pd === 'string' ? pd
+                : (pd.displayPrice || pd.price || pd.display || pd.label || '');
+            // Fallback: check alternate top-level paths
+            if (!priceDisplay) {
+                const pp = d.props?.pageProps;
+                priceDisplay = pp?.listing?.priceDetails?.displayPrice
+                    || pp?.listing?.price
+                    || pp?.price
+                    || cp.displayPrice
+                    || summary.displayPrice
+                    || '';
+            }
+            const isAuction = /auction/i.test(String(priceDisplay));
 
             return {
                 description: descArr,
@@ -405,6 +417,9 @@ async def scrape_domain_listing(page, url):
                 propertyType: summary.propertyType,
                 priceDisplay: priceDisplay,
                 isAuction: isAuction,
+                // Diagnostic: raw price keys for debugging
+                _rawSummaryKeys: Object.keys(summary),
+                _rawPriceDetails: JSON.stringify(summary.priceDetails || summary.price || cp.priceDetails || cp.price || null),
             };
         }""")
 
@@ -434,6 +449,9 @@ async def scrape_domain_listing(page, url):
         if data.get('priceDisplay'):
             result['price_display'] = data['priceDisplay']
             result['is_auction'] = bool(data.get('isAuction'))
+        else:
+            log(f"  [debug] price not found. summary keys: {data.get('_rawSummaryKeys')}")
+            log(f"  [debug] raw priceDetails: {data.get('_rawPriceDetails')}")
 
         # Parse description lines for key data
         for line in desc_lines:
@@ -771,7 +789,7 @@ async def run_single(url: str, persist: bool = True) -> dict:
             price_numeric = parse_price(price_display) if price_display else None
 
             if price_numeric is None and not is_auction:
-                raise ValueError(f"Could not determine price from listing (got: {price_display!r})")
+                log(f"  ⚠ Could not determine price from listing (got: {price_display!r}) — defaulting to $0. Use Scenario Planner to set the purchase price.")
 
             purchase_price = price_numeric or 0
 
