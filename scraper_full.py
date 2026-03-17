@@ -564,40 +564,47 @@ async def scrape_property_com(page, address, suburb, postcode):
             street_name = street_name.replace(old, new)
         direct_url = f"https://www.property.com.au/qld/{suburb_slug}-{postcode}/{street_name}/{num}/"
 
-        landed = False
-        for attempt_url in [direct_url]:
+        async def _nav_to_property(target_url):
+            """Navigate and wait for property page content to render. Returns True if landed."""
             try:
-                await page.goto(attempt_url, wait_until='domcontentloaded', timeout=25000)
-                # Wait for the dynamic summary paragraph to render
+                await page.goto(target_url, wait_until='domcontentloaded', timeout=30000)
+                # Wait for network to go idle so JS-loaded content renders
                 try:
-                    await page.wait_for_selector('text=About the property', timeout=7000)
+                    await page.wait_for_load_state('networkidle', timeout=10000)
+                except:
+                    await page.wait_for_timeout(5000)
+                current = page.url
+                if '/pid-' in current:
+                    result['property_com_url'] = current
+                    return True
+            except:
+                pass
+            return False
+
+        landed = await _nav_to_property(direct_url)
+
+        if not landed:
+            # Search fallback — use property.com.au autocomplete-style search
+            search_q = f"{num} {street_name.replace('-',' ')} {suburb_slug.replace('-',' ')} {postcode}"
+            search_url = f"https://www.property.com.au/search/?q={search_q.replace(' ', '+')}"
+            try:
+                await page.goto(search_url, wait_until='domcontentloaded', timeout=25000)
+                try:
+                    await page.wait_for_load_state('networkidle', timeout=8000)
                 except:
                     await page.wait_for_timeout(4000)
-                # Check if we landed on a real property page (has estimated value or address)
-                current_url = page.url
-                if '/pid-' in current_url or suburb_slug in current_url:
-                    result['property_com_url'] = current_url
-                    landed = True
-                    break
+                # Find first pid link
+                first_pid = page.locator('a[href*="/pid-"]').first
+                if await first_pid.is_visible(timeout=5000):
+                    href = await first_pid.get_attribute('href')
+                    prop_url = ('https://www.property.com.au' + href
+                                if href.startswith('/') else href)
+                    landed = await _nav_to_property(prop_url)
             except:
                 pass
 
         if not landed:
-            # Fall back to search
-            search_q = f"{address} {suburb} {postcode}".strip()
-            search_url = f"https://www.property.com.au/search/?q={search_q.replace(' ','+')}"
-            await page.goto(search_url, wait_until='domcontentloaded', timeout=25000)
-            await page.wait_for_timeout(3000)
-            first_result = page.locator('a[href*="/pid-"]').first
-            if await first_result.is_visible(timeout=5000):
-                href = await first_result.get_attribute('href')
-                prop_url = 'https://www.property.com.au' + href if href.startswith('/') else href
-                result['property_com_url'] = prop_url
-                await page.goto(prop_url, wait_until='domcontentloaded', timeout=25000)
-                try:
-                    await page.wait_for_selector('text=About the property', timeout=7000)
-                except:
-                    await page.wait_for_timeout(4000)
+            log(f"  [debug propcom] Could not land on a /pid- page. Last URL: {page.url}")
 
         # ── Try __NEXT_DATA__ first (property.com.au is also Next.js) ────────
         next_data = await page.evaluate("""() => {
