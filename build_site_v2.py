@@ -15,9 +15,9 @@ if isinstance(raw, list):
     props_data = raw
     meta = {'generated_display': 'March 2026', 'total_found': len(raw), 'suburbs_searched': ['Pimpama','Upper Coomera']}
     assump = {'deposit_pct':0.20,'interest_rate':0.062,'cap_growth_rate':0.07,'rental_growth':0.04,
-              'vacancy_rate':0.04,'pm_rate':0.085,'marginal_rate_eamon':0.47,'marginal_rate_nadeene':0.45,
+              'vacancy_rate':0.04,'pm_rate':0.085,'marginal_rate_buyer1':0.47,'marginal_rate_buyer2':0.45,
               'avg_marginal':0.46,'cgt_discount':0.50,'selling_costs_pct':0.025,
-              'buyers':'Eamon & Nadeene','structure':'50/50 Tenants in Common'}
+              'structure':'50/50 Tenants in Common'}
     output = {'meta': meta, 'assumptions': assump, 'properties': props_data}
 else:
     output = raw
@@ -191,7 +191,7 @@ html = f"""<!DOCTYPE html>
     <div class="sub">Gold Coast · Ipswich · Logan — Pimpama · Coomera · Ormeau · Helensvale · Ripley · Yarrabilba · Redbank Plains + more</div>
   </div>
   <div style="text-align:right">
-    <div class="badge">Eamon &amp; Nadeene · 50/50 TIC</div>
+    <div class="badge">50/50 Tenants in Common</div>
     <div class="updated" id="lastUpdated">Loading...</div>
   </div>
 </header>
@@ -1093,8 +1093,8 @@ function renderAssumptions() {{
     ['Vacancy Allowance',(assump.vacancy_rate*100).toFixed(0)+'% (~2 weeks/year)'],
     ['Property Management',(assump.pm_rate*100).toFixed(1)+'% of gross rent'],
     ['Maintenance Reserve','0.8% of purchase price p.a.'],
-    ["Eamon's Marginal Rate",(assump.marginal_rate_eamon*100)+'% (>$190k, incl Medicare)'],
-    ["Nadeene's Marginal Rate",(assump.marginal_rate_nadeene*100)+'% (~$150–190k)'],
+    ["Buyer 1 Marginal Rate",(assump.marginal_rate_buyer1*100)+'%'],
+    ["Buyer 2 Marginal Rate",(assump.marginal_rate_buyer2*100)+'%'],
     ['CGT Treatment','50% discount; split 50/50; taxed at respective rates'],
     ['Selling Costs on Exit',(assump.selling_costs_pct*100).toFixed(1)+'% of sale price'],
   ];
@@ -1144,7 +1144,7 @@ function renderAssumptions() {{
         rw*=(1+assump.rental_growth);
       }}
       const ev10=price*Math.pow(1+g/100,10);
-      const cgt=(ev10-price)*assump.cgt_discount*0.5*(assump.marginal_rate_eamon+assump.marginal_rate_nadeeen||0.92);
+      const cgt=(ev10-price)*assump.cgt_discount*0.5*(assump.marginal_rate_buyer1+assump.marginal_rate_nadeeen||0.92);
       cfs[10]+=ev10-loan-ev10*assump.selling_costs_pct-cgt;
       let lo=-0.5,hi=1,irr=0.1;
       for(let i=0;i<80;i++){{const mid=(lo+hi)/2;const n=cfs.reduce((s,c,t)=>s+c/Math.pow(1+mid,t),0);if(Math.abs(n)<100){{irr=mid;break;}}n>0?lo=mid:hi=mid;irr=mid;}}
@@ -1168,8 +1168,8 @@ const SC_DEFAULTS = {{
   vacancy_rate:     assump.vacancy_rate    || 0.04,
   pm_rate:          assump.pm_rate         || 0.085,
   inflation:        0.03,
-  marginal_rate_e:  assump.marginal_rate_eamon || 0.47,
-  marginal_rate_n:  assump.marginal_rate_nadeene || 0.45,
+  marginal_rate_e:  assump.marginal_rate_buyer1 || 0.47,
+  marginal_rate_n:  assump.marginal_rate_buyer2 || 0.45,
 }};
 
 let scGlobal = Object.assign({{}}, SC_DEFAULTS);
@@ -1183,8 +1183,8 @@ function buildScenarioControls() {{
     {{ key:'vacancy_rate',    label:'Vacancy Allowance',     min:0,   max:10,  step:0.5,  fmt: v=>(v*100).toFixed(1)+'%' }},
     {{ key:'pm_rate',         label:'Property Mgmt Fee',     min:5,   max:12,  step:0.5,  fmt: v=>(v*100).toFixed(1)+'%' }},
     {{ key:'inflation',       label:'Inflation (CPI)',        min:1,   max:6,   step:0.25, fmt: v=>(v*100).toFixed(2)+'%' }},
-    {{ key:'marginal_rate_e', label:"Eamon's Tax Rate",      min:30,  max:50,  step:1,    fmt: v=>(v*100).toFixed(0)+'%' }},
-    {{ key:'marginal_rate_n', label:"Nadeene's Tax Rate",    min:30,  max:50,  step:1,    fmt: v=>(v*100).toFixed(0)+'%' }},
+    {{ key:'marginal_rate_e', label:"Buyer 1 Tax Rate",      min:30,  max:50,  step:1,    fmt: v=>(v*100).toFixed(0)+'%' }},
+    {{ key:'marginal_rate_n', label:"Buyer 2 Tax Rate",      min:30,  max:50,  step:1,    fmt: v=>(v*100).toFixed(0)+'%' }},
   ];
   const container = document.getElementById('globalControls');
   container.innerHTML = sliders.map(s => {{

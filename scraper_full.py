@@ -52,9 +52,9 @@ WATER             = 1200
 INSURANCE         = 1900
 MAINTENANCE_PCT   = 0.008
 LEGAL_COSTS       = 2400
-MARGINAL_RATE_E   = 0.47
-MARGINAL_RATE_N   = 0.45
-AVG_MARGINAL      = (MARGINAL_RATE_E + MARGINAL_RATE_N) / 2
+MARGINAL_RATE_1   = 0.47   # Buyer 1 marginal tax rate (configure for your situation)
+MARGINAL_RATE_2   = 0.45   # Buyer 2 marginal tax rate
+AVG_MARGINAL      = (MARGINAL_RATE_1 + MARGINAL_RATE_2) / 2
 CGT_DISCOUNT      = 0.50
 SELLING_COSTS_PCT = 0.025
 INFLATION_RATE    = 0.025   # for real (inflation-adjusted) return calculations
@@ -119,8 +119,8 @@ def financial_model(prop):
         equity = pv - loan
         sc_sell= pv * SELLING_COSTS_PCT
         gg     = pv - price
-        cgt_s  = round((gg * CGT_DISCOUNT * 0.50 * MARGINAL_RATE_E) +
-                       (gg * CGT_DISCOUNT * 0.50 * MARGINAL_RATE_N)) if gg > 0 else 0
+        cgt_s  = round((gg * CGT_DISCOUNT * 0.50 * MARGINAL_RATE_1) +
+                       (gg * CGT_DISCOUNT * 0.50 * MARGINAL_RATE_2)) if gg > 0 else 0
         net_if_sold = round(pv - loan - sc_sell - cgt_s)
         yearly.append({
             'year': yr, 'prop_value': pv, 'loan_balance': round(loan), 'equity': round(equity),
@@ -143,7 +143,7 @@ def financial_model(prop):
     ev10  = yearly[9]['prop_value']
     sc10  = round(ev10 * SELLING_COSTS_PCT)
     gg10  = ev10 - price
-    cgt10 = round((gg10*CGT_DISCOUNT*0.50*MARGINAL_RATE_E) + (gg10*CGT_DISCOUNT*0.50*MARGINAL_RATE_N))
+    cgt10 = round((gg10*CGT_DISCOUNT*0.50*MARGINAL_RATE_1) + (gg10*CGT_DISCOUNT*0.50*MARGINAL_RATE_2))
     net10 = round(ev10 - loan - sc10 - cgt10)
     cash_flows[10] += net10
     try:    irr = round(npf.irr(cash_flows) * 100, 2)
@@ -1191,10 +1191,10 @@ async def run():
                 'cap_growth_rate': CAP_GROWTH_RATE, 'rental_growth': RENTAL_GROWTH,
                 'inflation_rate': INFLATION_RATE,
                 'vacancy_rate': VACANCY_RATE, 'pm_rate': PM_RATE,
-                'marginal_rate_eamon': MARGINAL_RATE_E, 'marginal_rate_nadeene': MARGINAL_RATE_N,
+                'marginal_rate_buyer1': MARGINAL_RATE_1, 'marginal_rate_buyer2': MARGINAL_RATE_2,
                 'avg_marginal': AVG_MARGINAL, 'cgt_discount': CGT_DISCOUNT,
                 'selling_costs_pct': SELLING_COSTS_PCT,
-                'buyers': 'Eamon & Nadeene', 'structure': '50/50 Tenants in Common',
+                'structure': '50/50 Tenants in Common',
             },
             'properties': enriched,
         }
