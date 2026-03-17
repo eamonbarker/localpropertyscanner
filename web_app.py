@@ -157,9 +157,8 @@ HTML = """<!DOCTYPE html>
     <h2>Assess a Property</h2>
     <div class="input-row">
       <input type="url" id="urlInput"
-             placeholder="Paste a Domain.com.au listing URL  e.g. https://www.domain.com.au/2020685507"
-             onkeydown="if(event.key==='Enter') assess()">
-      <button class="btn" id="assessBtn" onclick="assess()">Assess →</button>
+             placeholder="Paste a Domain.com.au listing URL  e.g. https://www.domain.com.au/2020685507">
+      <button class="btn" id="assessBtn">Assess →</button>
     </div>
     <div class="progress" id="progress">
       <div style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:var(--navy)">
@@ -215,6 +214,13 @@ HTML = """<!DOCTYPE html>
 
 <script>
 let pollTimer = null;
+
+document.addEventListener('DOMContentLoaded', function() {
+  document.getElementById('assessBtn').addEventListener('click', assess);
+  document.getElementById('urlInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') assess();
+  });
+});
 
 function fmt(n) {
   if (n == null) return '—';
