@@ -4,7 +4,8 @@ FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 WORKDIR /app
 
 # Install cron + Python deps
-RUN apt-get update && apt-get install -y --no-install-recommends cron tzdata \
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cron tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
