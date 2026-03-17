@@ -439,9 +439,14 @@ async def scrape_domain_listing(page, url):
                 propertyType: summary.propertyType,
                 priceDisplay: priceDisplay,
                 isAuction: isAuction,
-                // Diagnostic: raw price keys for debugging
+                // Diagnostic: dump everything price-related for debugging
                 _rawSummaryKeys: Object.keys(summary),
+                _rawSummaryMethod: summary.method || null,
+                _rawSummaryTitle: summary.title || null,
+                _rawSummaryStatus: summary.status || null,
                 _rawPriceDetails: JSON.stringify(summary.priceDetails || summary.price || cp.priceDetails || cp.price || null),
+                _rawCpKeys: Object.keys(cp).filter(k => k.toLowerCase().includes('price') || k.toLowerCase().includes('auction') || k.toLowerCase().includes('listing') || k.toLowerCase().includes('sale')),
+                _rawPagePropsKeys: Object.keys(d.props?.pageProps || {}),
             };
         }""")
 
@@ -472,8 +477,14 @@ async def scrape_domain_listing(page, url):
             result['price_display'] = data['priceDisplay']
             result['is_auction'] = bool(data.get('isAuction'))
         else:
-            log(f"  [debug] price not found. summary keys: {data.get('_rawSummaryKeys')}")
-            log(f"  [debug] raw priceDetails: {data.get('_rawPriceDetails')}")
+            log(f"  [debug] price not found.")
+            log(f"  [debug] summary keys:    {data.get('_rawSummaryKeys')}")
+            log(f"  [debug] summary.method:  {data.get('_rawSummaryMethod')}")
+            log(f"  [debug] summary.title:   {data.get('_rawSummaryTitle')}")
+            log(f"  [debug] summary.status:  {data.get('_rawSummaryStatus')}")
+            log(f"  [debug] priceDetails:    {data.get('_rawPriceDetails')}")
+            log(f"  [debug] cp price keys:   {data.get('_rawCpKeys')}")
+            log(f"  [debug] pageProps keys:  {data.get('_rawPagePropsKeys')}")
 
         # Parse description lines for key data
         for line in desc_lines:
@@ -593,6 +604,8 @@ async def scrape_property_com(page, address, suburb, postcode):
         full = text  # keep full text for regex searches across line breaks
         lines = [l.strip() for l in text.split('\n') if l.strip()]
         full_lower = full.lower()
+        log(f"  [debug propcom] url={result.get('property_com_url')}  text_len={len(text)}")
+        log(f"  [debug propcom] first 500 chars: {text[:500].replace(chr(10), ' | ')}")
 
         # ── Overlays — parse the "About the property" summary sentence ────────
         # property.com.au uses natural language in a single paragraph, e.g.:
@@ -714,6 +727,8 @@ async def scrape_property_com(page, address, suburb, postcode):
             f"heritage={result['heritage_overlay']} est=${result['proptrack_estimate']} "
             f"rent_est=${result['rental_estimate_pw']}/wk nbn={result['nbn_type']} "
             f"schools={result['school_catchments'][:1]}")
+        if all(v is None for v in [result['flood_overlay'], result['proptrack_estimate'], result['rental_estimate_pw']]):
+            log(f"  [debug propcom] all nulls — check debug lines above for page content")
 
     except Exception as e:
         log(f"  property.com.au error: {e}")
